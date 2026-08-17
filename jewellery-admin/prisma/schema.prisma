@@ -1,0 +1,113 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:dev.sqlite"
+}
+
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+model AppSetting {
+  id               String   @id @default("default")
+  goldPricePerGram Float    @default(6500)
+  updatedAt        DateTime @updatedAt
+}
+
+model Collection {
+  id                  String    @id @default(cuid())
+  name                String
+  shopifyCollectionId String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  products            Product[]
+}
+
+model MetalType {
+  id        String           @id @default(cuid())
+  name      String
+  color     String
+  status    String           @default("Active")
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  purities  PurityLevel[]
+  variants  ProductVariant[]
+}
+
+model PurityLevel {
+  id          String           @id @default(cuid())
+  metalId     String
+  label       String
+  karat       Int              @default(0)
+  purityValue Float
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  metal       MetalType        @relation(fields: [metalId], references: [id], onDelete: Cascade)
+  variants    ProductVariant[]
+}
+
+model Product {
+  id               String           @id @default(cuid())
+  sku              String
+  name             String
+  description      String           @default("")
+  imageUrl         String           @default("")
+  shopifyFileId    String?
+  imagesJson       String           @default("[]")
+  gender           String           @default("Unisex")
+  collectionId     String?
+  shopifyProductId String?
+  status           String           @default("Active")
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  collection       Collection?      @relation(fields: [collectionId], references: [id], onDelete: SetNull)
+  variants         ProductVariant[]
+}
+
+model ProductVariant {
+  id                 String      @id @default(cuid())
+  productId          String
+  metalId            String
+  purityId           String
+  metalColor         String
+  grossWeight        Float
+  stoneIncluded      Boolean     @default(false)
+  stoneType          String      @default("None")
+  stoneWeight        Float       @default(0)
+  diamondCategory    String      @default("")
+  wastagePercent     Float       @default(0)
+  makingChargeType   String      @default("percent")
+  makingChargeValue  Float       @default(0)
+  stoneRate          Float       @default(0)
+  imageUrl           String      @default("")
+  shopifyFileId      String?
+  shopifyVariantId   String?
+  status             String      @default("Active")
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  product            Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  metal              MetalType   @relation(fields: [metalId], references: [id])
+  purity             PurityLevel @relation(fields: [purityId], references: [id])
+}
