@@ -87,27 +87,41 @@ model Product {
 }
 
 model ProductVariant {
-  id                 String      @id @default(cuid())
+  id                 String       @id @default(cuid())
   productId          String
   metalId            String
   purityId           String
   metalColor         String
   grossWeight        Float
-  stoneIncluded      Boolean     @default(false)
-  stoneType          String      @default("None")
-  stoneWeight        Float       @default(0)
-  diamondCategory    String      @default("")
-  wastagePercent     Float       @default(0)
-  makingChargeType   String      @default("percent")
-  makingChargeValue  Float       @default(0)
-  stoneRate          Float       @default(0)
-  imageUrl           String      @default("")
+  stoneIncluded      Boolean      @default(false)
+  stoneType          String       @default("None")
+  stoneWeight        Float        @default(0)
+  diamondCategory    String       @default("")
+  diamondSpecId      String?
+  wastagePercent     Float        @default(0)
+  makingChargeType   String       @default("percent")
+  makingChargeValue  Float        @default(0)
+  stoneRate          Float        @default(0)
+  imageUrl           String       @default("")
   shopifyFileId      String?
   shopifyVariantId   String?
-  status             String      @default("Active")
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
-  product            Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
-  metal              MetalType   @relation(fields: [metalId], references: [id])
-  purity             PurityLevel @relation(fields: [purityId], references: [id])
+  status             String       @default("Active")
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  product            Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  metal              MetalType    @relation(fields: [metalId], references: [id])
+  purity             PurityLevel  @relation(fields: [purityId], references: [id])
+  diamondSpec        DiamondSpec? @relation(fields: [diamondSpecId], references: [id], onDelete: SetNull)
+}
+
+model DiamondSpec {
+  id        String           @id @default(cuid())
+  cut       String
+  carat     Float
+  color     String
+  clarity   String
+  price     Float
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  variants  ProductVariant[]
 }

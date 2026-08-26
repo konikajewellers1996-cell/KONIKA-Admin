@@ -8,10 +8,10 @@ export default function App() {
         <meta name="viewport" content="width=device-width,initial-scale=1" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        {/* Cirka/Söhne are licensed brand fonts — Instrument Serif stands in for Cirka until woff2 is self-hosted */}
+        {/* Cirka/Söhne are licensed brand fonts — Instrument Serif stands in for Cirka, Inter stands in for Söhne until woff2 is self-hosted */}
         <link
           rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital,wght@0,400;1,400&family=Inter:wght@300;400;500;700&display=swap"
         />
         <Meta />
         <Links />

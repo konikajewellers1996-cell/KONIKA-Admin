@@ -4,6 +4,7 @@ export type PriceInput = {
   grossWeight: number;
   stoneWeight: number;
   stoneIncluded: boolean;
+  stoneType?: string;
   wastagePercent: number;
   makingChargeType: MakingChargeType;
   makingChargeValue: number;
@@ -29,14 +30,26 @@ export function calculateProductPrice(input: PriceInput): PriceBreakdown {
   const makingChargeValue = Number(input.makingChargeValue) || 0;
   const stoneRate = Number(input.stoneRate) || 0;
 
-  const netGoldWeight = Math.max(grossWeight - stoneWeight, 0);
+  // For Diamonds, stoneWeight is stored as carat weight, which we convert to grams (1 ct = 0.2 g)
+  // for subtracting from gold gross weight.
+  const stoneWeightInGrams = input.stoneIncluded && input.stoneType === "Diamond"
+    ? stoneWeight * 0.2
+    : stoneWeight;
+
+  const netGoldWeight = Math.max(grossWeight - stoneWeightInGrams, 0);
   const chargeableGoldWeight = netGoldWeight + netGoldWeight * (wastagePercent / 100);
   const goldValue = chargeableGoldWeight * goldPricePerGram;
   const makingCharge =
     input.makingChargeType === "percent"
       ? goldValue * (makingChargeValue / 100)
       : makingChargeValue;
-  const stoneCharge = input.stoneIncluded ? stoneWeight * stoneRate : 0;
+
+  // For Diamonds, stoneRate is stored as the total price of the specified stone.
+  // For other stones, stoneCharge = weight in grams * rate per gram.
+  const stoneCharge = input.stoneIncluded
+    ? (input.stoneType === "Diamond" ? stoneRate : stoneWeight * stoneRate)
+    : 0;
+
   const total = goldValue + makingCharge + stoneCharge;
 
   return {

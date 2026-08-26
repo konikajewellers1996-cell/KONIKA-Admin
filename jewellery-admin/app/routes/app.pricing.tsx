@@ -8,9 +8,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
   const settings = await prisma.appSetting.findUnique({ where: { id: "default" } });
   const productCount = await prisma.product.count();
+  const purities = await prisma.purityLevel.findMany({
+    orderBy: { karat: "desc" },
+  });
   return {
     goldPricePerGram: settings?.goldPricePerGram ?? 6500,
+    updatedAt: settings?.updatedAt ? settings.updatedAt.toISOString() : null,
     productCount,
+    purities,
   };
 };
 
@@ -32,9 +37,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         create: { id: "default", goldPricePerGram },
       });
 
+      // Import and trigger background Shopify catalog price sync
+      const { runGoldRateSync } = await import("../lib/gold-rate-cron.server");
+      runGoldRateSync(goldPricePerGram).catch((err) => {
+        console.error("[Pricing Page] Error in manual background gold rate sync:", err);
+      });
+
       return {
         ok: true,
-        message: `Gold rate saved at ${formatINR(goldPricePerGram)} / g. Use Sync all to Shopify to update product prices.`,
+        message: `Gold rate saved at ${formatINR(goldPricePerGram)} / g. Updating product prices on Shopify in the background...`,
       };
     }
 
@@ -48,10 +59,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function PricingPage() {
-  const { goldPricePerGram, productCount } = useLoaderData<typeof loader>();
+  const { goldPricePerGram, updatedAt, productCount, purities } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
+
+  // Filter unique purities by label for clean display
+  const uniquePurities = purities.filter(
+    (item, index, self) => self.findIndex((p) => p.label === item.label) === index
+  );
 
   return (
     <>
@@ -76,14 +92,43 @@ export default function PricingPage() {
             fontSize: 36,
             fontWeight: 500,
             color: "var(--surface-primary-cta)",
-            marginBottom: 6,
+            marginBottom: 2,
           }}
         >
           {formatINR(goldPricePerGram)}
         </div>
+        {updatedAt ? (
+          <div style={{ fontSize: 12, color: "var(--text-gray-500)", marginBottom: 12 }}>
+            Last updated: {new Date(updatedAt).toLocaleString("en-IN", {
+              day: "numeric",
+              month: "short",
+              year: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+              hour12: true
+            })}
+          </div>
+        ) : null}
         <div className="page-sub" style={{ marginBottom: 16 }}>
           {productCount} products in catalogue
         </div>
+
+        {uniquePurities.length > 0 ? (
+          <div style={{ marginTop: 16, marginBottom: 20, background: "var(--bg-light-white)", border: "1px solid var(--border-color)", padding: 12, borderRadius: 6 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--surface-primary-cta)", marginBottom: 8 }}>Purity rates per gram (INR):</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {uniquePurities.map((purity) => {
+                const calculatedRate = (goldPricePerGram / 0.916) * purity.purityValue;
+                return (
+                  <div key={purity.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, borderBottom: "1px dashed var(--border-color)", paddingBottom: 4 }}>
+                    <span style={{ color: "var(--text-gray-500)" }}>Gold ({purity.label})</span>
+                    <strong className="mono" style={{ color: "var(--surface-primary-cta)" }}>{formatINR(calculatedRate)}</strong>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
 
         <Form method="post">
           <input type="hidden" name="intent" value="save-rate" />
@@ -104,7 +149,7 @@ export default function PricingPage() {
           </button>
         </Form>
         <div className="hint" style={{ marginTop: 10 }}>
-          Product prices update on Shopify when you use <strong>Sync all to Shopify</strong>.
+          Saving the gold rate will automatically update all product prices on Shopify in the background.
         </div>
       </div>
 

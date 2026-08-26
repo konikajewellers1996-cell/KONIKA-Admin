@@ -91,11 +91,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 grossWeight: variant.grossWeight,
                 stoneWeight: variant.stoneWeight,
                 stoneIncluded: variant.stoneIncluded,
+                stoneType: variant.stoneType,
                 wastagePercent: variant.wastagePercent,
                 makingChargeType: variant.makingChargeType as MakingChargeType,
                 makingChargeValue: variant.makingChargeValue,
                 stoneRate: variant.stoneRate,
-                goldPricePerGram,
+                goldPricePerGram: variant.purity
+                  ? (goldPricePerGram / 0.916) * variant.purity.purityValue
+                  : goldPricePerGram,
               }).total,
               status: variant.status,
             })),

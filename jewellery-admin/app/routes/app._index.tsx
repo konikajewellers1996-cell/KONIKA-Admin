@@ -48,6 +48,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           grossWeight: first.grossWeight,
           stoneWeight: first.stoneWeight,
           stoneIncluded: first.stoneIncluded,
+          stoneType: first.stoneType,
           wastagePercent: first.wastagePercent,
           makingChargeType: first.makingChargeType as "percent" | "fixed",
           makingChargeValue: first.makingChargeValue,
@@ -153,7 +154,7 @@ export default function Dashboard() {
                   <tr key={purity.id}>
                     <td>{purity.metal.color}</td>
                     <td>{purity.label}</td>
-                    <td className="mono">{formatINR(goldPricePerGram)}</td>
+                    <td className="mono">{formatINR((goldPricePerGram / 0.916) * purity.purityValue)}</td>
                   </tr>
                 ))
               )}

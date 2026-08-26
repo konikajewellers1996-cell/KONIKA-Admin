@@ -1,4 +1,6 @@
-import { priceToShopifyString } from "./pricing";
+import { priceToShopifyString, calculateProductPrice, type MakingChargeType } from "./pricing";
+import prisma from "../db.server";
+
 
 type GraphqlClient = (
   query: string,
@@ -474,3 +476,45 @@ function escapeHtml(value: string) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
+
+export async function syncAllProductPricesToShopify(graphql: GraphqlClient, goldPricePerGram: number) {
+  const products = await prisma.product.findMany({
+    include: {
+      variants: { include: { purity: true } },
+    },
+  });
+
+  console.log(`[Shopify Price Sync] Syncing prices for ${products.length} products using gold rate ${goldPricePerGram}...`);
+
+  for (const product of products) {
+    if (!product.shopifyProductId) continue;
+
+    const variantsPayload = product.variants
+      .filter((v) => v.shopifyVariantId)
+      .map((variant) => ({
+        shopifyVariantId: variant.shopifyVariantId!,
+        price: calculateProductPrice({
+          grossWeight: variant.grossWeight,
+          stoneWeight: variant.stoneWeight,
+          stoneIncluded: variant.stoneIncluded,
+          stoneType: variant.stoneType,
+          wastagePercent: variant.wastagePercent,
+          makingChargeType: variant.makingChargeType as MakingChargeType,
+          makingChargeValue: variant.makingChargeValue,
+          stoneRate: variant.stoneRate,
+          goldPricePerGram: variant.purity
+            ? (goldPricePerGram / 0.916) * variant.purity.purityValue
+            : goldPricePerGram,
+        }).total,
+      }));
+
+    if (variantsPayload.length > 0) {
+      try {
+        await updateShopifyVariantPrices(graphql, product.shopifyProductId, variantsPayload);
+      } catch (error: any) {
+        console.error(`[Shopify Price Sync] Failed to update prices for product ${product.sku}: ${error.message}`);
+      }
+    }
+  }
+}
+

@@ -2,12 +2,28 @@
 
 client_id = "625bcfc79c65b0841dab2bce16177527"
 name = "Jewellery_Admin"
-application_url = "https://example.com"
+application_url = "https://networking-herald-platforms-surprising.trycloudflare.com"
 embedded = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,write_files,write_publications,read_publications,write_metaobjects,write_metaobject_definitions"
+scopes = "read_publications,write_files,write_metaobject_definitions,write_metaobjects,write_products,write_publications"
+
+[auth]
+redirect_urls = [
+  "https://networking-herald-platforms-surprising.trycloudflare.com/api/auth"
+]
+
+[webhooks]
+api_version = "2026-10"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
 
 [product.metafields.app.demo_info]
 type = "single_line_text_field"
@@ -33,20 +49,5 @@ required = true
 name = "Description"
 type = "multi_line_text_field"
 
-[webhooks]
-api_version = "2026-10"
-
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/app/uninstalled"
-  topics = [ "app/uninstalled" ]
-
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/app/scopes_update"
-  topics = [ "app/scopes_update" ]
-
-[auth]
-redirect_urls = [ "https://example.com/api/auth" ]
-
 [build]
-include_config_on_deploy = true
 automatically_update_urls_on_dev = true
