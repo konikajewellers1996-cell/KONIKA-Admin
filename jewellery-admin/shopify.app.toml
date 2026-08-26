@@ -2,7 +2,7 @@
 
 client_id = "625bcfc79c65b0841dab2bce16177527"
 name = "Jewellery_Admin"
-application_url = "https://networking-herald-platforms-surprising.trycloudflare.com"
+application_url = "https://konika-admin.onrender.com"
 embedded = true
 
 [access_scopes]
@@ -11,7 +11,9 @@ scopes = "read_publications,write_files,write_metaobject_definitions,write_metao
 
 [auth]
 redirect_urls = [
-  "https://networking-herald-platforms-surprising.trycloudflare.com/api/auth"
+  "https://konika-admin.onrender.com/auth/callback",
+  "https://konika-admin.onrender.com/auth/shopify/callback",
+  "https://konika-admin.onrender.com/api/auth"
 ]
 
 [webhooks]
