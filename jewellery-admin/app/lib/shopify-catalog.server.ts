@@ -518,3 +518,45 @@ export async function syncAllProductPricesToShopify(graphql: GraphqlClient, gold
   }
 }
 
+export async function fetchCollectionsFromShopify(graphql: GraphqlClient) {
+  let hasNextPage = true;
+  let after: string | null = null;
+  const allCollections: Array<{ id: string; title: string }> = [];
+
+  while (hasNextPage) {
+    const res: any = await gql<any>(
+      graphql,
+      `#graphql
+      query getCollections($first: Int!, $after: String) {
+        collections(first: $first, after: $after) {
+          nodes {
+            id
+            title
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }`,
+      { first: 250, after },
+      "Fetch collections"
+    );
+
+    const nodes = res?.collections?.nodes;
+    if (Array.isArray(nodes)) {
+      for (const node of nodes) {
+        if (node && typeof node.id === "string" && typeof node.title === "string") {
+          allCollections.push({ id: node.id, title: node.title });
+        }
+      }
+    }
+
+    hasNextPage = res?.collections?.pageInfo?.hasNextPage ?? false;
+    after = res?.collections?.pageInfo?.endCursor ?? null;
+  }
+
+  return allCollections;
+}
+
+

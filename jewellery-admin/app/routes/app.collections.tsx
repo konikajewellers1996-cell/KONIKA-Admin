@@ -3,7 +3,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { deleteCollectionFromShopify } from "../lib/shopify-catalog.server";
+import { deleteCollectionFromShopify, fetchCollectionsFromShopify } from "../lib/shopify-catalog.server";
 
 function initials(name: string) {
   return name
@@ -29,6 +29,54 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(form.get("intent") || "");
 
   try {
+    if (intent === "import_shopify") {
+      const shopifyCollections = await fetchCollectionsFromShopify(admin.graphql);
+      let importedCount = 0;
+      let updatedCount = 0;
+
+      for (const fetched of shopifyCollections) {
+        const existingByShopifyId = await prisma.collection.findFirst({
+          where: { shopifyCollectionId: fetched.id },
+        });
+
+        if (existingByShopifyId) {
+          if (existingByShopifyId.name !== fetched.title) {
+            await prisma.collection.update({
+              where: { id: existingByShopifyId.id },
+              data: { name: fetched.title },
+            });
+            updatedCount++;
+          }
+        } else {
+          const existingByName = await prisma.collection.findFirst({
+            where: { name: fetched.title },
+          });
+
+          if (existingByName) {
+            await prisma.collection.update({
+              where: { id: existingByName.id },
+              data: { shopifyCollectionId: fetched.id },
+            });
+            updatedCount++;
+          } else {
+            await prisma.collection.create({
+              data: {
+                name: fetched.title,
+                shopifyCollectionId: fetched.id,
+              },
+            });
+            importedCount++;
+          }
+        }
+      }
+
+      return {
+        ok: true,
+        message: `Successfully fetched collections. Imported ${importedCount} new and updated ${updatedCount} existing.`,
+        clearEdit: true,
+      };
+    }
+
     if (intent === "create") {
       const name = String(form.get("name") || "").trim();
       if (!name) return { ok: false, message: "Collection name is required." };
@@ -137,7 +185,13 @@ export default function CollectionsPage() {
             Create or edit collections here, then use Sync all to Shopify to push everything
           </div>
         </div>
-        <div className="head-actions">
+        <div className="head-actions" style={{ display: "flex", gap: 8 }}>
+          <Form method="post" style={{ display: "inline" }}>
+            <input type="hidden" name="intent" value="import_shopify" />
+            <button type="submit" className="btn primary" disabled={busy}>
+              {busy ? "Fetching..." : "Fetch from Shopify"}
+            </button>
+          </Form>
           <button type="button" className="btn" onClick={startCreate}>
             New collection
           </button>
