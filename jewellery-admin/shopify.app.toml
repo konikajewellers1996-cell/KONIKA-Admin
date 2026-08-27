@@ -27,6 +27,14 @@ api_version = "2026-10"
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
 
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/products"
+  topics = [ "products/create", "products/update", "products/delete" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/collections"
+  topics = [ "collections/create", "collections/update", "collections/delete" ]
+
 [product.metafields.app.demo_info]
 type = "single_line_text_field"
 name = "Demo Source Info"
