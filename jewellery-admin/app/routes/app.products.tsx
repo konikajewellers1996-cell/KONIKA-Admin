@@ -466,6 +466,8 @@ export default function ProductsPage() {
   const [variantFileMap, setVariantFileMap] = useState<Record<string, File>>({});
   const [draftFile, setDraftFile] = useState<File | null>(null);
   const productImageInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedCollections, setSelectedCollections] = useState<Array<{ id: string; name: string }>>([]);
+  const [collectionSelectVal, setCollectionSelectVal] = useState("");
 
   useEffect(() => {
     if (actionData && "clearEdit" in actionData && actionData.clearEdit && actionData.ok) {
@@ -559,6 +561,8 @@ export default function ProductsPage() {
     setEditingId(null);
     setEditingVariantKey(null);
     setProductForm(emptyProductForm());
+    setSelectedCollections([]);
+    setCollectionSelectVal("");
     setProductImages([]);
     setVariants([]);
     setVariantForm(
@@ -606,6 +610,12 @@ export default function ProductsPage() {
       collectionIds: product.collectionIds,
       status: product.status,
     });
+    const selectedColls = product.collectionIds.map((id) => {
+      const coll = collections.find((c) => c.id === id);
+      return { id, name: coll?.name ?? "Unknown" };
+    }).filter((c) => c.id);
+    setSelectedCollections(selectedColls);
+    setCollectionSelectVal("");
     setProductImages(
       product.images.map((image, index) => ({
         key: `saved-${index}-${image.url.slice(-12)}`,
@@ -994,42 +1004,77 @@ export default function ProductsPage() {
 
                 <div className="field">
                   <label>Collections</label>
-                  <div style={{
-                    maxHeight: 180,
-                    overflowY: "auto",
-                    border: "1px solid var(--border-color)",
-                    borderRadius: 4,
-                    padding: 8,
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 6,
-                    backgroundColor: "#fff"
-                  }}>
-                    {collections.map((c) => {
-                      const isChecked = productForm.collectionIds.includes(c.id);
-                      return (
-                        <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontWeight: "normal" }}>
-                          <input
-                            type="checkbox"
-                            name="collectionIds"
-                            value={c.id}
-                            checked={isChecked}
-                            onChange={(e) => {
-                              const checked = e.target.checked;
-                              setProductForm((prev) => {
-                                const nextIds = checked
-                                  ? [...prev.collectionIds, c.id]
-                                  : prev.collectionIds.filter((id) => id !== c.id);
-                                return { ...prev, collectionIds: nextIds };
-                              });
-                            }}
-                          />
-                          <span>{c.name} {c.parent ? <span style={{ fontSize: "0.85em", color: "#888" }}>(Sub of {c.parent.name})</span> : null}</span>
-                        </label>
-                      );
-                    })}
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <select
+                      style={{ flex: 1 }}
+                      value={collectionSelectVal}
+                      onChange={(e) => setCollectionSelectVal(e.target.value)}
+                    >
+                      <option value="">Select a collection...</option>
+                      {collections
+                        .filter((c) => !selectedCollections.some((sc) => sc.id === c.id))
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} {c.parent ? `(Sub of ${c.parent.name})` : ""}
+                          </option>
+                        ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ height: 42, padding: "0 16px" }}
+                      onClick={() => {
+                        if (!collectionSelectVal) return;
+                        const coll = collections.find((c) => c.id === collectionSelectVal);
+                        if (coll) {
+                          setSelectedCollections((prev) => [...prev, { id: coll.id, name: coll.name }]);
+                        }
+                        setCollectionSelectVal("");
+                      }}
+                    >
+                      + Add
+                    </button>
                   </div>
-                  <div className="hint" style={{ marginTop: 4 }}>Select all collections that apply to this item.</div>
+
+                  {/* Render the chips list */}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+                    {selectedCollections.map((coll) => (
+                      <div
+                        key={coll.id}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "6px 12px",
+                          borderRadius: 20,
+                          fontSize: "0.9em",
+                          backgroundColor: "#f0f0f0",
+                          border: "1px solid #ddd",
+                        }}
+                      >
+                        <span>{coll.name}</span>
+                        <button
+                          type="button"
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            cursor: "pointer",
+                            fontSize: "1.1em",
+                            padding: 0,
+                            lineHeight: 1,
+                            color: "#888",
+                          }}
+                          onClick={() => {
+                            setSelectedCollections((prev) => prev.filter((c) => c.id !== coll.id));
+                          }}
+                        >
+                          &times;
+                        </button>
+                        {/* Hidden input to submit via standard form POST */}
+                        <input type="hidden" name="collectionIds" value={coll.id} />
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="field">
