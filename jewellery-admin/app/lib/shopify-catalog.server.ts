@@ -68,8 +68,23 @@ export async function syncCollectionToShopify(
   graphql: GraphqlClient,
   name: string,
   existingId?: string | null,
+  description?: string,
+  imageUrl?: string,
 ) {
+  const collectionInput: Record<string, any> = {
+    title: name,
+  };
+
+  if (description !== undefined) {
+    collectionInput.descriptionHtml = description ? `<p>${escapeHtml(description)}</p>` : "";
+  }
+
+  if (imageUrl !== undefined) {
+    collectionInput.image = imageUrl ? { src: imageUrl } : null;
+  }
+
   if (existingId) {
+    collectionInput.id = existingId;
     const data = await gql<{
       collectionUpdate: {
         collection: { id: string } | null;
@@ -84,7 +99,7 @@ export async function syncCollectionToShopify(
           userErrors { field message }
         }
       }`,
-      { input: { id: existingId, title: name } },
+      { input: collectionInput },
       "Collection update",
     );
     assertNoUserErrors(data.collectionUpdate.userErrors, "Collection update");
@@ -108,11 +123,7 @@ export async function syncCollectionToShopify(
         userErrors { field message }
       }
     }`,
-    {
-      input: {
-        title: name,
-      },
-    },
+    { input: collectionInput },
     "Collection create",
   );
 
@@ -521,7 +532,7 @@ export async function syncAllProductPricesToShopify(graphql: GraphqlClient, gold
 export async function fetchCollectionsFromShopify(graphql: GraphqlClient) {
   let hasNextPage = true;
   let after: string | null = null;
-  const allCollections: Array<{ id: string; title: string }> = [];
+  const allCollections: Array<{ id: string; title: string; description: string; imageUrl: string }> = [];
 
   while (hasNextPage) {
     const res: any = await gql<any>(
@@ -532,6 +543,10 @@ export async function fetchCollectionsFromShopify(graphql: GraphqlClient) {
           nodes {
             id
             title
+            descriptionHtml
+            image {
+              url
+            }
           }
           pageInfo {
             hasNextPage
@@ -547,7 +562,12 @@ export async function fetchCollectionsFromShopify(graphql: GraphqlClient) {
     if (Array.isArray(nodes)) {
       for (const node of nodes) {
         if (node && typeof node.id === "string" && typeof node.title === "string") {
-          allCollections.push({ id: node.id, title: node.title });
+          allCollections.push({
+            id: node.id,
+            title: node.title,
+            description: node.descriptionHtml || "",
+            imageUrl: node.image?.url || "",
+          });
         }
       }
     }

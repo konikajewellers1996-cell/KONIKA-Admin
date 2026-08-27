@@ -14,19 +14,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const title = String(payload.title || "").trim();
     if (!title) return new Response();
 
+    const description = payload.body_html || "";
+    const imageUrl = payload.image?.src || "";
+
     // Check if it exists by shopifyCollectionId
     const existingById = await prisma.collection.findFirst({
       where: { shopifyCollectionId },
     });
 
     if (existingById) {
-      if (existingById.name !== title) {
-        await prisma.collection.update({
-          where: { id: existingById.id },
-          data: { name: title },
-        });
-        console.log(`[Collection Webhook] Updated local collection name to "${title}" for ID ${existingById.id}`);
-      }
+      await prisma.collection.update({
+        where: { id: existingById.id },
+        data: {
+          name: title,
+          description,
+          imageUrl,
+        },
+      });
+      console.log(`[Collection Webhook] Updated local collection "${title}" for ID ${existingById.id}`);
     } else {
       // Check if it exists by name
       const existingByName = await prisma.collection.findFirst({
@@ -36,14 +41,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (existingByName) {
         await prisma.collection.update({
           where: { id: existingByName.id },
-          data: { shopifyCollectionId },
+          data: {
+            shopifyCollectionId,
+            description,
+            imageUrl,
+          },
         });
-        console.log(`[Collection Webhook] Linked existing local collection "${title}" to Shopify ID ${shopifyCollectionId}`);
+        console.log(`[Collection Webhook] Linked and updated local collection "${title}" to Shopify ID ${shopifyCollectionId}`);
       } else {
         // Create new collection
         const newCol = await prisma.collection.create({
           data: {
             name: title,
+            description,
+            imageUrl,
             shopifyCollectionId,
           },
         });

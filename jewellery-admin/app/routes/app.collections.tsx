@@ -34,16 +34,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       let importedCount = 0;
       let updatedCount = 0;
 
+      const shopifyIds = new Set(shopifyCollections.map((c) => c.id));
+
       for (const fetched of shopifyCollections) {
         const existingByShopifyId = await prisma.collection.findFirst({
           where: { shopifyCollectionId: fetched.id },
         });
 
         if (existingByShopifyId) {
-          if (existingByShopifyId.name !== fetched.title) {
+          if (
+            existingByShopifyId.name !== fetched.title ||
+            existingByShopifyId.description !== fetched.description ||
+            existingByShopifyId.imageUrl !== fetched.imageUrl
+          ) {
             await prisma.collection.update({
               where: { id: existingByShopifyId.id },
-              data: { name: fetched.title },
+              data: {
+                name: fetched.title,
+                description: fetched.description,
+                imageUrl: fetched.imageUrl,
+              },
             });
             updatedCount++;
           }
@@ -55,13 +65,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           if (existingByName) {
             await prisma.collection.update({
               where: { id: existingByName.id },
-              data: { shopifyCollectionId: fetched.id },
+              data: {
+                shopifyCollectionId: fetched.id,
+                description: fetched.description,
+                imageUrl: fetched.imageUrl,
+              },
             });
             updatedCount++;
           } else {
             await prisma.collection.create({
               data: {
                 name: fetched.title,
+                description: fetched.description,
+                imageUrl: fetched.imageUrl,
                 shopifyCollectionId: fetched.id,
               },
             });
@@ -70,24 +86,47 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }
       }
 
+      // Self-healing: Delete local collections that are linked to Shopify but no longer exist there
+      const deletedRes = await prisma.collection.deleteMany({
+        where: {
+          shopifyCollectionId: {
+            notIn: Array.from(shopifyIds),
+            not: null,
+          },
+        },
+      });
+
+      let msg = `Successfully fetched collections. Imported ${importedCount} new, updated ${updatedCount} existing.`;
+      if (deletedRes.count > 0) {
+        msg += ` Cleaned up ${deletedRes.count} collection(s) deleted from Shopify.`;
+      }
+
       return {
         ok: true,
-        message: `Successfully fetched collections. Imported ${importedCount} new and updated ${updatedCount} existing.`,
+        message: msg,
         clearEdit: true,
       };
     }
 
     if (intent === "create") {
       const name = String(form.get("name") || "").trim();
+      const description = String(form.get("description") || "").trim();
+      const imageUrl = "";
       if (!name) return { ok: false, message: "Collection name is required." };
 
       const exists = await prisma.collection.findFirst({ where: { name } });
       if (exists) return { ok: false, message: "Collection already exists." };
 
-      const shopifyCollectionId = await syncCollectionToShopify(admin.graphql, name);
+      const shopifyCollectionId = await syncCollectionToShopify(
+        admin.graphql,
+        name,
+        null,
+        description,
+        imageUrl,
+      );
 
       await prisma.collection.create({
-        data: { name, shopifyCollectionId },
+        data: { name, description, imageUrl, shopifyCollectionId },
       });
       return {
         ok: true,
@@ -99,6 +138,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (intent === "update") {
       const id = String(form.get("id") || "");
       const name = String(form.get("name") || "").trim();
+      const description = String(form.get("description") || "").trim();
       if (!id || !name) return { ok: false, message: "Name is required." };
 
       const current = await prisma.collection.findUnique({ where: { id } });
@@ -113,11 +153,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         admin.graphql,
         name,
         current.shopifyCollectionId,
+        description,
+        current.imageUrl,
       );
 
       await prisma.collection.update({
         where: { id },
-        data: { name, shopifyCollectionId },
+        data: { name, description, shopifyCollectionId },
       });
       return {
         ok: true,
@@ -158,6 +200,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 type EditingCollection = {
   id: string;
   name: string;
+  description: string;
 };
 
 export default function CollectionsPage() {
@@ -168,22 +211,30 @@ export default function CollectionsPage() {
 
   const [editing, setEditing] = useState<EditingCollection | null>(null);
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
 
   useEffect(() => {
     if (actionData && "clearEdit" in actionData && actionData.clearEdit && actionData.ok) {
       setEditing(null);
       setName("");
+      setDescription("");
     }
   }, [actionData]);
 
   const startCreate = () => {
     setEditing(null);
     setName("");
+    setDescription("");
   };
 
-  const startEdit = (collection: { id: string; name: string }) => {
-    setEditing({ id: collection.id, name: collection.name });
+  const startEdit = (collection: { id: string; name: string; description: string }) => {
+    setEditing({
+      id: collection.id,
+      name: collection.name,
+      description: collection.description,
+    });
     setName(collection.name);
+    setDescription(collection.description);
   };
 
   return (
@@ -233,6 +284,16 @@ export default function CollectionsPage() {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Bridal Collection"
                 required
+              />
+            </div>
+            <div className="field">
+              <label>Description</label>
+              <textarea
+                name="description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Collection description..."
+                style={{ minHeight: 80, resize: "vertical" }}
               />
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
