@@ -20,7 +20,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     await Promise.all([
       prisma.appSetting.findUnique({ where: { id: "default" } }),
       prisma.collection.findMany({
-        include: { _count: { select: { products: true } } },
+        include: {
+          parent: true,
+          _count: { select: { products: true } },
+        },
         orderBy: { name: "asc" },
       }),
       prisma.metalType.findMany({ orderBy: { color: "asc" } }),
@@ -172,21 +175,47 @@ export default function Dashboard() {
         <div className="panel-title">Collections</div>
         <div className="coll-grid">
           {collections.map((collection) => (
-            <Link key={collection.id} to="/app/collections" className="coll-card">
-              <div className="coll-icon">{initials(collection.name)}</div>
-              <div className="coll-name">{collection.name}</div>
-              <div className="coll-count">
-                {collection._count.products} product
-                {collection._count.products === 1 ? "" : "s"}
-                {" · "}
-                {collection.shopifyCollectionId ? "Synced" : "Not synced"}
+            <Link
+              key={collection.id}
+              to="/app/collections"
+              className="coll-card"
+              style={{ display: "block" }}
+            >
+              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                {collection.imageUrl ? (
+                  <img
+                    src={collection.imageUrl}
+                    alt=""
+                    style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 4, flexShrink: 0 }}
+                  />
+                ) : (
+                  <div className="coll-icon" style={{ flexShrink: 0 }}>{initials(collection.name)}</div>
+                )}
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div className="coll-name" style={{ textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                    {collection.name}
+                  </div>
+                  <div className="coll-count">
+                    {collection._count.products} product
+                    {collection._count.products === 1 ? "" : "s"}
+                    {" · "}
+                    {collection.parent ? `Sub of ${collection.parent.name}` : "Main Collection"}
+                  </div>
+                  <div className="hint" style={{ marginTop: 2 }}>
+                    {collection.shopifyCollectionId ? "Synced" : "Not synced"}
+                  </div>
+                </div>
               </div>
             </Link>
           ))}
-          <Link to="/app/collections" className="coll-card coll-card-new">
-            <div className="coll-icon">+</div>
-            <div className="coll-name">New collection</div>
-            <div className="coll-count">Create collections</div>
+          <Link to="/app/collections" className="coll-card coll-card-new" style={{ display: "block" }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <div className="coll-icon" style={{ flexShrink: 0 }}>+</div>
+              <div>
+                <div className="coll-name">New collection</div>
+                <div className="coll-count">Create collections</div>
+              </div>
+            </div>
           </Link>
         </div>
       </div>
