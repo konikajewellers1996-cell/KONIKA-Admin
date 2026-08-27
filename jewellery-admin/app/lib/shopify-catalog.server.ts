@@ -590,7 +590,7 @@ export async function syncSingleProductToShopify(
     where: { id: productId },
     include: {
       variants: { include: { purity: true } },
-      collection: true,
+      collections: true,
     },
   });
 
@@ -664,13 +664,16 @@ export async function syncSingleProductToShopify(
     ),
   );
 
-  const shopifyCollectionId = product.collection?.shopifyCollectionId ?? null;
-  if (shopifyCollectionId) {
-    await addProductToShopifyCollection(
-      graphql,
-      shopifyCollectionId,
-      shopifyProductId,
-    );
+  if (product.collections.length > 0) {
+    for (const coll of product.collections) {
+      if (coll.shopifyCollectionId) {
+        await addProductToShopifyCollection(
+          graphql,
+          coll.shopifyCollectionId,
+          shopifyProductId,
+        );
+      }
+    }
   }
 
   return { shopifyProductId, variantIdMap };

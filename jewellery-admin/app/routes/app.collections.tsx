@@ -4,6 +4,7 @@ import { Form, useActionData, useLoaderData, useNavigation } from "react-router"
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { deleteCollectionFromShopify, fetchCollectionsFromShopify, syncCollectionToShopify } from "../lib/shopify-catalog.server";
+import { readFormFile, uploadImageToShopifyFiles } from "../lib/shopify-files.server";
 
 function initials(name: string) {
   return name
@@ -17,7 +18,10 @@ function initials(name: string) {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
   const collections = await prisma.collection.findMany({
-    include: { _count: { select: { products: true } } },
+    include: {
+      parent: true,
+      _count: { select: { products: true } },
+    },
     orderBy: { name: "asc" },
   });
   return { collections };
@@ -111,7 +115,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (intent === "create") {
       const name = String(form.get("name") || "").trim();
       const description = String(form.get("description") || "").trim();
-      const imageUrl = "";
+      const parentId = String(form.get("parentId") || "") || null;
+      const existingImageUrl = String(form.get("existingImageUrl") || "");
+
+      let imageUrl = existingImageUrl;
+      const file = await readFormFile(form, "collectionImage");
+      if (file) {
+        const uploaded = await uploadImageToShopifyFiles(admin.graphql, file, name);
+        imageUrl = uploaded.url;
+      }
+
       if (!name) return { ok: false, message: "Collection name is required." };
 
       const exists = await prisma.collection.findFirst({ where: { name } });
@@ -126,7 +139,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       );
 
       await prisma.collection.create({
-        data: { name, description, imageUrl, shopifyCollectionId },
+        data: { name, description, imageUrl, parentId, shopifyCollectionId },
       });
       return {
         ok: true,
@@ -139,6 +152,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const id = String(form.get("id") || "");
       const name = String(form.get("name") || "").trim();
       const description = String(form.get("description") || "").trim();
+      const parentId = String(form.get("parentId") || "") || null;
+      const existingImageUrl = String(form.get("existingImageUrl") || "");
+
       if (!id || !name) return { ok: false, message: "Name is required." };
 
       const current = await prisma.collection.findUnique({ where: { id } });
@@ -149,17 +165,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
       if (duplicate) return { ok: false, message: "Another collection already uses that name." };
 
+      let imageUrl = existingImageUrl;
+      const file = await readFormFile(form, "collectionImage");
+      if (file) {
+        const uploaded = await uploadImageToShopifyFiles(admin.graphql, file, name);
+        imageUrl = uploaded.url;
+      }
+
       const shopifyCollectionId = await syncCollectionToShopify(
         admin.graphql,
         name,
         current.shopifyCollectionId,
         description,
-        current.imageUrl,
+        imageUrl,
       );
 
       await prisma.collection.update({
         where: { id },
-        data: { name, description, shopifyCollectionId },
+        data: { name, description, imageUrl, parentId, shopifyCollectionId },
       });
       return {
         ok: true,
@@ -173,7 +196,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const current = await prisma.collection.findUnique({ where: { id } });
       if (!current) return { ok: false, message: "Collection not found." };
 
-      const productCount = await prisma.product.count({ where: { collectionId: id } });
+      const productCount = await prisma.product.count({
+        where: {
+          collections: {
+            some: { id },
+          },
+        },
+      });
       if (productCount > 0) {
         return {
           ok: false,
@@ -201,6 +230,8 @@ type EditingCollection = {
   id: string;
   name: string;
   description: string;
+  parentId: string;
+  imageUrl: string;
 };
 
 export default function CollectionsPage() {
@@ -212,12 +243,16 @@ export default function CollectionsPage() {
   const [editing, setEditing] = useState<EditingCollection | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [parentId, setParentId] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
 
   useEffect(() => {
     if (actionData && "clearEdit" in actionData && actionData.clearEdit && actionData.ok) {
       setEditing(null);
       setName("");
       setDescription("");
+      setParentId("");
+      setImageUrl("");
     }
   }, [actionData]);
 
@@ -225,16 +260,22 @@ export default function CollectionsPage() {
     setEditing(null);
     setName("");
     setDescription("");
+    setParentId("");
+    setImageUrl("");
   };
 
-  const startEdit = (collection: { id: string; name: string; description: string }) => {
+  const startEdit = (collection: any) => {
     setEditing({
       id: collection.id,
       name: collection.name,
-      description: collection.description,
+      description: collection.description || "",
+      parentId: collection.parentId || "",
+      imageUrl: collection.imageUrl || "",
     });
     setName(collection.name);
-    setDescription(collection.description);
+    setDescription(collection.description || "");
+    setParentId(collection.parentId || "");
+    setImageUrl(collection.imageUrl || "");
   };
 
   return (
@@ -273,7 +314,7 @@ export default function CollectionsPage() {
               Editing <strong>{editing.name}</strong>
             </div>
           ) : null}
-          <Form method="post">
+          <Form method="post" encType="multipart/form-data">
             <input type="hidden" name="intent" value={editing ? "update" : "create"} />
             {editing ? <input type="hidden" name="id" value={editing.id} /> : null}
             <div className="field">
@@ -285,6 +326,41 @@ export default function CollectionsPage() {
                 placeholder="e.g. Bridal Collection"
                 required
               />
+            </div>
+            <div className="field">
+              <label>Parent Collection (Optional)</label>
+              <select
+                name="parentId"
+                value={parentId}
+                onChange={(e) => setParentId(e.target.value)}
+              >
+                <option value="">No parent (Is Main Collection)</option>
+                {collections
+                  .filter((c) => c.id !== editing?.id && !c.parentId)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <div className="field">
+              <label>Collection Image</label>
+              {imageUrl ? (
+                <div style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+                  <img
+                    src={imageUrl}
+                    alt="Collection Thumbnail"
+                    style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 4, border: "1px solid var(--border-color)" }}
+                  />
+                  <button type="button" className="btn small" onClick={() => setImageUrl("")}>
+                    Remove Image
+                  </button>
+                  <input type="hidden" name="existingImageUrl" value={imageUrl} />
+                </div>
+              ) : (
+                <input type="file" name="collectionImage" accept="image/*" />
+              )}
             </div>
             <div className="field">
               <label>Description</label>
@@ -323,16 +399,30 @@ export default function CollectionsPage() {
                 }}
                 onClick={() => startEdit(collection)}
               >
-                <div className="coll-icon">{initials(collection.name)}</div>
-                <div className="coll-name">{collection.name}</div>
-                <div className="coll-count">
-                  {collection._count.products} product
-                  {collection._count.products === 1 ? "" : "s"}
-                  {" · "}
-                  {collection.shopifyCollectionId ? "On Shopify" : "Local only"}
-                </div>
-                <div className="hint" style={{ marginTop: 8 }}>
-                  Click to edit
+                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                  {collection.imageUrl ? (
+                    <img
+                      src={collection.imageUrl}
+                      alt=""
+                      style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 4, flexShrink: 0 }}
+                    />
+                  ) : (
+                    <div className="coll-icon" style={{ flexShrink: 0 }}>{initials(collection.name)}</div>
+                  )}
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div className="coll-name" style={{ textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+                      {collection.name}
+                    </div>
+                    <div className="coll-count">
+                      {collection._count.products} product
+                      {collection._count.products === 1 ? "" : "s"}
+                      {" · "}
+                      {collection.parent ? `Sub of ${collection.parent.name}` : "Main Collection"}
+                    </div>
+                    <div className="hint" style={{ marginTop: 2 }}>
+                      {collection.shopifyCollectionId ? "On Shopify" : "Local only"}
+                    </div>
+                  </div>
                 </div>
               </button>
             ))}
@@ -359,7 +449,23 @@ export default function CollectionsPage() {
                   collections.map((collection) => (
                     <tr key={collection.id}>
                       <td>
-                        <strong>{collection.name}</strong>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          {collection.imageUrl ? (
+                            <img
+                              src={collection.imageUrl}
+                              alt=""
+                              style={{ width: 28, height: 28, objectFit: "cover", borderRadius: 4 }}
+                            />
+                          ) : null}
+                          <div>
+                            <strong>{collection.name}</strong>
+                            {collection.parent ? (
+                              <div className="hint" style={{ fontSize: "0.8em" }}>
+                                Sub-collection of <strong>{collection.parent.name}</strong>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
                       </td>
                       <td>{collection._count.products}</td>
                       <td>

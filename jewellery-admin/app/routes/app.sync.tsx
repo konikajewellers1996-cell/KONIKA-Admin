@@ -32,6 +32,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         admin.graphql,
         collection.name,
         collection.shopifyCollectionId,
+        collection.description,
+        collection.imageUrl,
       );
       await prisma.collection.update({
         where: { id: collection.id },
@@ -43,7 +45,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const products = await prisma.product.findMany({
       include: {
         variants: { include: { purity: true } },
-        collection: true,
+        collections: true,
       },
       orderBy: { updatedAt: "asc" },
     });
@@ -120,23 +122,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           ),
         );
 
-        const shopifyCollectionId =
-          product.collection?.shopifyCollectionId ??
-          (product.collectionId
-            ? (
-                await prisma.collection.findUnique({
-                  where: { id: product.collectionId },
-                })
-              )?.shopifyCollectionId
-            : null) ??
-          null;
-
-        if (shopifyCollectionId) {
-          await addProductToShopifyCollection(
-            admin.graphql,
-            shopifyCollectionId,
-            shopifyProductId,
-          );
+        if (product.collections.length > 0) {
+          for (const coll of product.collections) {
+            if (coll.shopifyCollectionId) {
+              await addProductToShopifyCollection(
+                admin.graphql,
+                coll.shopifyCollectionId,
+                shopifyProductId,
+              );
+            }
+          }
         }
 
         productsSynced += 1;

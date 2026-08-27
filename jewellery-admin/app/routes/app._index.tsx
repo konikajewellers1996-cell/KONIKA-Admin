@@ -30,7 +30,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }),
       prisma.product.findMany({
         include: {
-          collection: true,
+          collections: true,
           variants: { include: { metal: true, purity: true } },
         },
         orderBy: { createdAt: "desc" },
@@ -61,7 +61,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       id: product.id,
       name: product.name,
       sku: product.sku,
-      collection: product.collection?.name ?? "—",
+      collection: product.collections.map((c) => c.name).join(", ") || "—",
       synced: Boolean(product.shopifyProductId),
       price,
       preview: first

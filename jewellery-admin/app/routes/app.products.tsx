@@ -56,7 +56,7 @@ type ProductFormState = {
   name: string;
   description: string;
   gender: string;
-  collectionId: string;
+  collectionIds: string[];
   status: string;
 };
 
@@ -108,12 +108,12 @@ const emptyVariant = (metalId = "", purityId = "", metalColor = ""): VariantDraf
   existingFileId: null,
 });
 
-const emptyProductForm = (collectionId = ""): ProductFormState => ({
+const emptyProductForm = (collectionIds: string[] = []): ProductFormState => ({
   sku: "",
   name: "",
   description: "",
   gender: "Women",
-  collectionId,
+  collectionIds,
   status: "Active",
 });
 
@@ -122,7 +122,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const [settings, collections, metals, purities, products, diamondSpecs] = await Promise.all([
     prisma.appSetting.findUnique({ where: { id: "default" } }),
-    prisma.collection.findMany({ orderBy: { name: "asc" } }),
+    prisma.collection.findMany({
+      include: { parent: true },
+      orderBy: { name: "asc" },
+    }),
     prisma.metalType.findMany({
       where: { status: "Active" },
       orderBy: { color: "asc" },
@@ -133,7 +136,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
     prisma.product.findMany({
       include: {
-        collection: true,
+        collections: true,
         variants: { include: { metal: true, purity: true } },
       },
       orderBy: { updatedAt: "desc" },
@@ -173,8 +176,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         product.shopifyFileId,
       ),
       gender: product.gender,
-      collectionId: product.collectionId ?? "",
-      collection: product.collection?.name ?? "—",
+      collectionIds: product.collections.map((c) => c.id),
+      collection: product.collections.map((c) => c.name).join(", ") || "—",
       status: product.status,
       synced: Boolean(product.shopifyProductId),
       variantCount: product.variants.length,
@@ -255,7 +258,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const name = String(form.get("name") || "").trim();
     const description = String(form.get("description") || "").trim();
     const gender = String(form.get("gender") || "Unisex");
-    const collectionId = String(form.get("collectionId") || "") || null;
+    const collectionIds = form.getAll("collectionIds").map(String);
     const status = String(form.get("status") || "Active");
     const variantsRaw = String(form.get("variantsJson") || "[]");
 
@@ -375,9 +378,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           shopifyFileId,
           imagesJson,
           gender,
-          collectionId,
           status,
           variants: { create: variantCreateData },
+          collections: {
+            set: collectionIds.map((id) => ({ id })),
+          },
         },
       });
     } else {
@@ -390,9 +395,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           shopifyFileId,
           imagesJson,
           gender,
-          collectionId,
           status,
           variants: { create: variantCreateData },
+          collections: {
+            connect: collectionIds.map((id) => ({ id })),
+          },
         },
       });
       productId = created.id;
@@ -446,7 +453,7 @@ export default function ProductsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [productForm, setProductForm] = useState<ProductFormState>(
-    emptyProductForm(collections[0]?.id ?? ""),
+    emptyProductForm([]),
   );
   const [productImages, setProductImages] = useState<ProductImageItem[]>([]);
   const [variants, setVariants] = useState<VariantDraft[]>([]);
@@ -551,7 +558,7 @@ export default function ProductsPage() {
   function resetForm() {
     setEditingId(null);
     setEditingVariantKey(null);
-    setProductForm(emptyProductForm(collections[0]?.id ?? ""));
+    setProductForm(emptyProductForm());
     setProductImages([]);
     setVariants([]);
     setVariantForm(
@@ -596,7 +603,7 @@ export default function ProductsPage() {
       name: product.name,
       description: product.description,
       gender: product.gender,
-      collectionId: product.collectionId,
+      collectionIds: product.collectionIds,
       status: product.status,
     });
     setProductImages(
@@ -985,37 +992,58 @@ export default function ProductsPage() {
                   ) : null}
                 </div>
 
-                <div className="field-row">
-                  <div className="field">
-                    <label>Collection</label>
-                    <select
-                      name="collectionId"
-                      value={productForm.collectionId}
-                      onChange={(e) =>
-                        setProductForm((c) => ({ ...c, collectionId: e.target.value }))
-                      }
-                    >
-                      <option value="">No collection</option>
-                      {collections.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
+                <div className="field">
+                  <label>Collections</label>
+                  <div style={{
+                    maxHeight: 180,
+                    overflowY: "auto",
+                    border: "1px solid var(--border-color)",
+                    borderRadius: 4,
+                    padding: 8,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    backgroundColor: "#fff"
+                  }}>
+                    {collections.map((c) => {
+                      const isChecked = productForm.collectionIds.includes(c.id);
+                      return (
+                        <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontWeight: "normal" }}>
+                          <input
+                            type="checkbox"
+                            name="collectionIds"
+                            value={c.id}
+                            checked={isChecked}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setProductForm((prev) => {
+                                const nextIds = checked
+                                  ? [...prev.collectionIds, c.id]
+                                  : prev.collectionIds.filter((id) => id !== c.id);
+                                return { ...prev, collectionIds: nextIds };
+                              });
+                            }}
+                          />
+                          <span>{c.name} {c.parent ? <span style={{ fontSize: "0.85em", color: "#888" }}>(Sub of {c.parent.name})</span> : null}</span>
+                        </label>
+                      );
+                    })}
                   </div>
-                  <div className="field">
-                    <label>Status</label>
-                    <select
-                      name="status"
-                      value={productForm.status}
-                      onChange={(e) =>
-                        setProductForm((c) => ({ ...c, status: e.target.value }))
-                      }
-                    >
-                      <option>Active</option>
-                      <option>Draft</option>
-                    </select>
-                  </div>
+                  <div className="hint" style={{ marginTop: 4 }}>Select all collections that apply to this item.</div>
+                </div>
+
+                <div className="field">
+                  <label>Status</label>
+                  <select
+                    name="status"
+                    value={productForm.status}
+                    onChange={(e) =>
+                      setProductForm((c) => ({ ...c, status: e.target.value }))
+                    }
+                  >
+                    <option value="Active">Active</option>
+                    <option value="Draft">Draft</option>
+                  </select>
                 </div>
               </div>
 

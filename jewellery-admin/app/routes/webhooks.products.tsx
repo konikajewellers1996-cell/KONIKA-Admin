@@ -19,14 +19,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   if (normalizedTopic === "PRODUCTS_CREATE" || normalizedTopic === "PRODUCTS_UPDATE") {
-    // 1. Determine local collectionId by querying Shopify GraphQL if admin client is available
-    let collectionId: string | null = null;
+    // 1. Determine local collectionIds by querying Shopify GraphQL if admin client is available
+    let collectionIds: string[] = [];
     if (admin) {
       try {
         const query = `#graphql
           query getProductCollections($id: ID!) {
             product(id: $id) {
-              collections(first: 5) {
+              collections(first: 50) {
                 nodes {
                   id
                   title
@@ -38,13 +38,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const response = await admin.graphql(query, { variables: { id: shopifyProductId } });
         const responseJson: any = await response.json();
         const collections = responseJson.data?.product?.collections?.nodes || [];
-        if (collections.length > 0) {
-          const firstColl = collections[0];
+        for (const coll of collections) {
           const localColl = await prisma.collection.findFirst({
-            where: { shopifyCollectionId: firstColl.id },
+            where: { shopifyCollectionId: coll.id },
           });
           if (localColl) {
-            collectionId = localColl.id;
+            collectionIds.push(localColl.id);
           }
         }
       } catch (err) {
@@ -93,13 +92,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       imagesJson,
       gender,
       status: payload.status === "active" ? "Active" : "Draft",
-      ...(collectionId ? { collectionId } : {}),
     };
 
     if (product) {
       product = await prisma.product.update({
         where: { id: product.id },
-        data: productData,
+        data: {
+          ...productData,
+          collections: {
+            set: collectionIds.map((id) => ({ id })),
+          },
+        },
       });
     } else {
       // Check if matches existing by SKU
@@ -113,6 +116,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           data: {
             shopifyProductId,
             ...productData,
+            collections: {
+              set: collectionIds.map((id) => ({ id })),
+            },
           },
         });
       } else {
@@ -120,6 +126,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           data: {
             shopifyProductId,
             ...productData,
+            collections: {
+              connect: collectionIds.map((id) => ({ id })),
+            },
           },
         });
       }
