@@ -16,7 +16,7 @@ import {
   formatINR,
   type MakingChargeType,
 } from "../lib/pricing";
-import { deleteProductFromShopify } from "../lib/shopify-catalog.server";
+import { deleteProductFromShopify, syncSingleProductToShopify } from "../lib/shopify-catalog.server";
 import {
   readFormFile,
   uploadImageToShopifyFiles,
@@ -398,12 +398,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       productId = created.id;
     }
 
+    // Sync to Shopify automatically!
+    try {
+      await syncSingleProductToShopify(productId!, admin.graphql);
+    } catch (syncErr) {
+      console.error("[Product Action] Auto-sync failed:", syncErr);
+      return {
+        ok: true,
+        message: `"${name}" saved locally, but failed to sync to Shopify: ${syncErr instanceof Error ? syncErr.message : "unknown error"}.`,
+        clearEdit: true,
+        productId,
+      };
+    }
+
     return {
       ok: true,
       message:
         intent === "update"
-          ? `"${name}" saved with ${productImages.length} product image(s). Use Sync all to Shopify to push changes.`
-          : `"${name}" saved with ${productImages.length} product image(s). Use Sync all to Shopify to push to Admin.`,
+          ? `"${name}" updated and synced to Shopify.`
+          : `"${name}" created and synced to Shopify.`,
       clearEdit: true,
       productId,
     };

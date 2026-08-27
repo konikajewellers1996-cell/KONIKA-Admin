@@ -3,7 +3,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
-import { deleteCollectionFromShopify, fetchCollectionsFromShopify } from "../lib/shopify-catalog.server";
+import { deleteCollectionFromShopify, fetchCollectionsFromShopify, syncCollectionToShopify } from "../lib/shopify-catalog.server";
 
 function initials(name: string) {
   return name
@@ -84,10 +84,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const exists = await prisma.collection.findFirst({ where: { name } });
       if (exists) return { ok: false, message: "Collection already exists." };
 
-      await prisma.collection.create({ data: { name } });
+      const shopifyCollectionId = await syncCollectionToShopify(admin.graphql, name);
+
+      await prisma.collection.create({
+        data: { name, shopifyCollectionId },
+      });
       return {
         ok: true,
-        message: `"${name}" saved. Use Sync all to Shopify to push.`,
+        message: `"${name}" saved and synced to Shopify.`,
         clearEdit: true,
       };
     }
@@ -105,13 +109,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
       if (duplicate) return { ok: false, message: "Another collection already uses that name." };
 
+      const shopifyCollectionId = await syncCollectionToShopify(
+        admin.graphql,
+        name,
+        current.shopifyCollectionId,
+      );
+
       await prisma.collection.update({
         where: { id },
-        data: { name },
+        data: { name, shopifyCollectionId },
       });
       return {
         ok: true,
-        message: `"${name}" saved. Use Sync all to Shopify to push.`,
+        message: `"${name}" updated and synced to Shopify.`,
         clearEdit: true,
       };
     }

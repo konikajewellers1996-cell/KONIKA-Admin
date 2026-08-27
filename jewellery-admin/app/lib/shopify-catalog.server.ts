@@ -559,4 +559,101 @@ export async function fetchCollectionsFromShopify(graphql: GraphqlClient) {
   return allCollections;
 }
 
+export async function syncSingleProductToShopify(
+  productId: string,
+  graphql: GraphqlClient,
+) {
+  const settings = await prisma.appSetting.findUnique({ where: { id: "default" } });
+  const goldPricePerGram = settings?.goldPricePerGram ?? 6500;
+
+  const product = await prisma.product.findUnique({
+    where: { id: productId },
+    include: {
+      variants: { include: { purity: true } },
+      collection: true,
+    },
+  });
+
+  if (!product) {
+    throw new Error("Product not found");
+  }
+
+  if (!product.variants.length) {
+    throw new Error("Product has no variants");
+  }
+
+  const { shopifyProductId, variantIdMap } = await syncProductToShopify(
+    graphql,
+    {
+      title: product.name,
+      description: product.description,
+      sku: product.sku,
+      gender: product.gender,
+      status: product.status === "Active" ? "ACTIVE" : "DRAFT",
+      imageUrl: product.imageUrl || undefined,
+      imageUrls: (() => {
+        try {
+          const parsed = JSON.parse(product.imagesJson || "[]") as Array<{
+            url?: string;
+          }>;
+          const urls = Array.isArray(parsed)
+            ? parsed.map((item) => item?.url).filter((url): url is string => Boolean(url))
+            : [];
+          if (urls.length) return urls;
+        } catch {
+          // ignore
+        }
+        return product.imageUrl ? [product.imageUrl] : [];
+      })(),
+      variants: product.variants.map((variant) => ({
+        id: variant.id,
+        skuSuffix: `${variant.metalColor.replace(/\s+/g, "")}-${variant.purity.label}`,
+        color: variant.metalColor,
+        purityLabel: variant.purity.label,
+        imageUrl: variant.imageUrl || undefined,
+        price: calculateProductPrice({
+          grossWeight: variant.grossWeight,
+          stoneWeight: variant.stoneWeight,
+          stoneIncluded: variant.stoneIncluded,
+          stoneType: variant.stoneType,
+          wastagePercent: variant.wastagePercent,
+          makingChargeType: variant.makingChargeType as MakingChargeType,
+          makingChargeValue: variant.makingChargeValue,
+          stoneRate: variant.stoneRate,
+          goldPricePerGram: variant.purity
+            ? (goldPricePerGram / 0.916) * variant.purity.purityValue
+            : goldPricePerGram,
+        }).total,
+        status: variant.status,
+      })),
+    },
+    product.shopifyProductId,
+  );
+
+  await prisma.product.update({
+    where: { id: product.id },
+    data: { shopifyProductId },
+  });
+
+  await Promise.all(
+    Object.entries(variantIdMap).map(([localId, shopifyVariantId]) =>
+      prisma.productVariant.update({
+        where: { id: localId },
+        data: { shopifyVariantId },
+      }),
+    ),
+  );
+
+  const shopifyCollectionId = product.collection?.shopifyCollectionId ?? null;
+  if (shopifyCollectionId) {
+    await addProductToShopifyCollection(
+      graphql,
+      shopifyCollectionId,
+      shopifyProductId,
+    );
+  }
+
+  return { shopifyProductId, variantIdMap };
+}
+
 

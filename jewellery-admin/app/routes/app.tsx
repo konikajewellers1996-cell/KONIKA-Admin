@@ -11,15 +11,22 @@ import {
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
-import { authenticate } from "../shopify.server";
+import { authenticate, registerWebhooks } from "../shopify.server";
 import { ensureAppSeed } from "../lib/seed.server";
 import prisma from "../db.server";
 import { formatINR } from "../lib/pricing";
 import "../styles/dashboard.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   await ensureAppSeed();
+
+  try {
+    await registerWebhooks({ session });
+    console.log("[Shopify Webhooks] Auto-registered/synced successfully.");
+  } catch (err) {
+    console.error("[Shopify Webhooks] Auto-registration failed:", err);
+  }
 
   const settings = await prisma.appSetting.findUnique({ where: { id: "default" } });
 
