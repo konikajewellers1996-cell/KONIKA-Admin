@@ -141,7 +141,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
       orderBy: { updatedAt: "desc" },
     }),
-    prisma.diamondSpec.findMany({ orderBy: { carat: "asc" } }),
+    prisma.diamondSpec.findMany({ orderBy: [{ caratFrom: "asc" }, { caratTo: "asc" }] }),
   ]);
 
   const goldPricePerGram = settings?.goldPricePerGram ?? 6500;
@@ -1366,8 +1366,8 @@ export default function ProductsPage() {
                                 setVariantForm((c) => ({
                                   ...c,
                                   diamondSpecId: specId,
-                                  diamondCategory: spec.cut,
-                                  stoneWeight: spec.carat,
+                                  diamondCategory: spec.cut || c.diamondCategory,
+                                  stoneWeight: spec.caratFrom ?? spec.caratTo ?? c.stoneWeight,
                                   stoneRate: spec.price,
                                 }));
                               } else {
@@ -1379,11 +1379,22 @@ export default function ProductsPage() {
                             }}
                           >
                             <option value="">Select inherited spec...</option>
-                            {diamondSpecs.map((spec) => (
-                              <option key={spec.id} value={spec.id}>
-                                {spec.cut} · {spec.carat.toFixed(3)}ct · {spec.color} · {spec.clarity} (₹{new Intl.NumberFormat("en-IN").format(spec.price)})
-                              </option>
-                            ))}
+                            {diamondSpecs.map((spec) => {
+                              const rangeText =
+                                spec.caratFrom !== null && spec.caratFrom !== undefined && spec.caratTo !== null && spec.caratTo !== undefined
+                                  ? `${Number(spec.caratFrom).toFixed(3)} - ${Number(spec.caratTo).toFixed(3)} ct`
+                                  : spec.caratFrom !== null && spec.caratFrom !== undefined
+                                    ? `${Number(spec.caratFrom).toFixed(3)} ct`
+                                    : spec.caratTo !== null && spec.caratTo !== undefined
+                                      ? `${Number(spec.caratTo).toFixed(3)} ct`
+                                      : "custom";
+
+                              return (
+                                <option key={spec.id} value={spec.id}>
+                                  {spec.name || "Diamond"} · {spec.cut || "Shape not set"} · {rangeText} · {spec.color || "Color not set"} · {spec.clarity || "Clarity not set"} (₹{new Intl.NumberFormat("en-IN").format(spec.price)})
+                                </option>
+                              );
+                            })}
                           </select>
                         </div>
                         <div className="field">

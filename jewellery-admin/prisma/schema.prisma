@@ -120,10 +120,12 @@ model ProductVariant {
 
 model DiamondSpec {
   id        String           @id @default(cuid())
-  cut       String
-  carat     Float
-  color     String
-  clarity   String
+  name      String           @default("")
+  cut       String?
+  caratFrom Float?
+  caratTo   Float?
+  color     String?
+  clarity   String?
   price     Float
   createdAt DateTime         @default(now())
   updatedAt DateTime         @updatedAt

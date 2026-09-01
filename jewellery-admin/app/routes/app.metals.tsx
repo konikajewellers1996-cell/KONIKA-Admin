@@ -82,26 +82,45 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     if (intent === "add-diamond-spec") {
+      const name = String(form.get("name") || "").trim();
       const cut = String(form.get("cut") || "").trim();
-      const carat = Number(form.get("carat"));
+      const caratFrom = Number(form.get("caratFrom"));
+      const caratTo = Number(form.get("caratTo"));
       const color = String(form.get("color") || "").trim();
       const clarity = String(form.get("clarity") || "").trim();
       const price = Number(form.get("price"));
 
-      if (!cut || !color || !clarity) {
-        return { ok: false, message: "Cut, colour, and clarity are required." };
+      if (!name) {
+        return { ok: false, message: "Diamond name is required." };
       }
-      if (!Number.isFinite(carat) || carat <= 0) {
-        return { ok: false, message: "Carat weight must be a positive number." };
+
+      const safeCaratFrom = Number.isFinite(caratFrom) && caratFrom > 0 ? caratFrom : null;
+      const safeCaratTo = Number.isFinite(caratTo) && caratTo > 0 ? caratTo : null;
+
+      if (!safeCaratFrom && !safeCaratTo) {
+        return { ok: false, message: "Set at least one valid carat weight or range." };
       }
+
+      if (safeCaratFrom !== null && safeCaratTo !== null && safeCaratFrom > safeCaratTo) {
+        return { ok: false, message: "From weight cannot be greater than To weight." };
+      }
+
       if (!Number.isFinite(price) || price < 0) {
         return { ok: false, message: "Price must be a positive number." };
       }
 
       await prisma.diamondSpec.create({
-        data: { cut, carat, color, clarity, price },
+        data: {
+          name,
+          cut: cut || null,
+          caratFrom: safeCaratFrom,
+          caratTo: safeCaratTo,
+          color: color || null,
+          clarity: clarity || null,
+          price,
+        },
       });
-      return { ok: true, message: `Diamond specification (${cut} ${carat}ct ${color}/${clarity}) added.` };
+      return { ok: true, message: `Diamond specification (${name}) added.` };
     }
 
     if (intent === "delete-diamond-spec") {
@@ -352,8 +371,13 @@ export default function MetalsPage() {
             <Form method="post">
               <input type="hidden" name="intent" value="add-diamond-spec" />
               <div className="field">
+                <label>Diamond name</label>
+                <input name="name" placeholder="e.g. Premium Round" required />
+              </div>
+              <div className="field">
                 <label>Cut / Shape</label>
-                <select name="cut" defaultValue="Round">
+                <select name="cut" defaultValue="">
+                  <option value="">-- Optional --</option>
                   <option>Round</option>
                   <option>Princess</option>
                   <option>Oval</option>
@@ -367,19 +391,31 @@ export default function MetalsPage() {
               </div>
               <div className="field-row">
                 <div className="field">
-                  <label>Carat weight</label>
+                  <label>Carat from</label>
                   <input
-                    name="carat"
+                    name="caratFrom"
                     type="number"
                     step="0.001"
-                    min="0.001"
-                    placeholder="e.g. 0.5"
-                    required
+                    min="0"
+                    placeholder="0.500"
                   />
                 </div>
                 <div className="field">
+                  <label>Carat to</label>
+                  <input
+                    name="caratTo"
+                    type="number"
+                    step="0.001"
+                    min="0"
+                    placeholder="1.000"
+                  />
+                </div>
+              </div>
+              <div className="field-row">
+                <div className="field">
                   <label>Colour</label>
-                  <select name="color" defaultValue="G-H">
+                  <select name="color" defaultValue="">
+                    <option value="">-- Optional --</option>
                     <option>D</option>
                     <option>E</option>
                     <option>F</option>
@@ -388,11 +424,10 @@ export default function MetalsPage() {
                     <option>K-M</option>
                   </select>
                 </div>
-              </div>
-              <div className="field-row">
                 <div className="field">
                   <label>Clarity</label>
-                  <select name="clarity" defaultValue="VVS2">
+                  <select name="clarity" defaultValue="">
+                    <option value="">-- Optional --</option>
                     <option>FL</option>
                     <option>IF</option>
                     <option>VVS1</option>
@@ -404,17 +439,17 @@ export default function MetalsPage() {
                     <option>I1</option>
                   </select>
                 </div>
-                <div className="field">
-                  <label>Price (₹)</label>
-                  <input
-                    name="price"
-                    type="number"
-                    step="1"
-                    min="0"
-                    placeholder="Price of this specified stone"
-                    required
-                  />
-                </div>
+              </div>
+              <div className="field">
+                <label>Price (₹)</label>
+                <input
+                  name="price"
+                  type="number"
+                  step="1"
+                  min="0"
+                  placeholder="Price of this stone range"
+                  required
+                />
               </div>
               <button className="btn primary" type="submit" disabled={busy}>
                 Add diamond specification
@@ -426,8 +461,9 @@ export default function MetalsPage() {
             <table className="data">
               <thead>
                 <tr>
+                  <th>Name</th>
                   <th>Cut</th>
-                  <th>Carat</th>
+                  <th>Carat Range</th>
                   <th>Colour</th>
                   <th>Clarity</th>
                   <th>Price (₹)</th>
@@ -437,29 +473,41 @@ export default function MetalsPage() {
               <tbody>
                 {diamondSpecs.length === 0 ? (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       <div className="empty-state">No diamond specifications yet.</div>
                     </td>
                   </tr>
                 ) : (
-                  diamondSpecs.map((spec) => (
-                    <tr key={spec.id}>
-                      <td>{spec.cut}</td>
-                      <td className="mono">{spec.carat.toFixed(3)} ct</td>
-                      <td>{spec.color}</td>
-                      <td>{spec.clarity}</td>
-                      <td className="mono">{new Intl.NumberFormat("en-IN").format(spec.price)}</td>
-                      <td>
-                        <Form method="post" className="row-actions">
-                          <input type="hidden" name="intent" value="delete-diamond-spec" />
-                          <input type="hidden" name="id" value={spec.id} />
-                          <button className="btn small danger" type="submit" disabled={busy}>
-                            Delete
-                          </button>
-                        </Form>
-                      </td>
-                    </tr>
-                  ))
+                  diamondSpecs.map((spec) => {
+                    const rangeText =
+                      spec.caratFrom !== null && spec.caratFrom !== undefined && spec.caratTo !== null && spec.caratTo !== undefined
+                        ? `${Number(spec.caratFrom).toFixed(3)} - ${Number(spec.caratTo).toFixed(3)} ct`
+                        : spec.caratFrom !== null && spec.caratFrom !== undefined
+                          ? `${Number(spec.caratFrom).toFixed(3)} ct`
+                          : spec.caratTo !== null && spec.caratTo !== undefined
+                            ? `${Number(spec.caratTo).toFixed(3)} ct`
+                            : "—";
+
+                    return (
+                      <tr key={spec.id}>
+                        <td>{spec.name || "Unnamed diamond"}</td>
+                        <td>{spec.cut || "—"}</td>
+                        <td className="mono">{rangeText}</td>
+                        <td>{spec.color || "—"}</td>
+                        <td>{spec.clarity || "—"}</td>
+                        <td className="mono">{new Intl.NumberFormat("en-IN").format(spec.price)}</td>
+                        <td>
+                          <Form method="post" className="row-actions">
+                            <input type="hidden" name="intent" value="delete-diamond-spec" />
+                            <input type="hidden" name="id" value={spec.id} />
+                            <button className="btn small danger" type="submit" disabled={busy}>
+                              Delete
+                            </button>
+                          </Form>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
