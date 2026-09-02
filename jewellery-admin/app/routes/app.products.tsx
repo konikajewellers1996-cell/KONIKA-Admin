@@ -1409,15 +1409,28 @@ export default function ProductsPage() {
                               }))
                             }
                           >
-                            <option>Round</option>
-                            <option>Princess</option>
-                            <option>Oval</option>
-                            <option>Cushion</option>
-                            <option>Emerald</option>
-                            <option>Marquise</option>
-                            <option>Pear</option>
-                            <option>Radiant</option>
-                            <option>Heart</option>
+                            {Array.from(
+                              new Set([
+                                "Round",
+                                "Princess",
+                                "Oval",
+                                "Cushion",
+                                "Emerald",
+                                "Marquise",
+                                "Pear",
+                                "Radiant",
+                                "Heart",
+                                "Asscher",
+                                "Baguette",
+                                "Trilliant",
+                                ...diamondSpecs.map((s) => s.cut).filter((c): c is string => Boolean(c)),
+                                ...(variantForm.diamondCategory ? [variantForm.diamondCategory] : []),
+                              ])
+                            ).map((cutName) => (
+                              <option key={cutName} value={cutName}>
+                                {cutName}
+                              </option>
+                            ))}
                           </select>
                         </div>
                       </div>

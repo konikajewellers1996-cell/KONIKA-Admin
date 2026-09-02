@@ -83,11 +83,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     if (intent === "add-diamond-spec") {
       const name = String(form.get("name") || "").trim();
-      const cut = String(form.get("cut") || "").trim();
+      const cutRaw = String(form.get("cut") || "").trim();
+      const customCut = String(form.get("customCut") || "").trim();
+      const cut = cutRaw === "__custom__" ? customCut : cutRaw;
+
       const caratFrom = Number(form.get("caratFrom"));
       const caratTo = Number(form.get("caratTo"));
-      const color = String(form.get("color") || "").trim();
-      const clarity = String(form.get("clarity") || "").trim();
+
+      const colorRaw = String(form.get("color") || "").trim();
+      const customColor = String(form.get("customColor") || "").trim();
+      const color = colorRaw === "__custom__" ? customColor : colorRaw;
+
+      const clarityRaw = String(form.get("clarity") || "").trim();
+      const customClarity = String(form.get("customClarity") || "").trim();
+      const clarity = clarityRaw === "__custom__" ? customClarity : clarityRaw;
+
       const price = Number(form.get("price"));
 
       if (!name) {
@@ -142,12 +152,88 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 };
 
+const DEFAULT_CUTS = [
+  "Round",
+  "Princess",
+  "Oval",
+  "Cushion",
+  "Emerald",
+  "Marquise",
+  "Pear",
+  "Radiant",
+  "Heart",
+  "Asscher",
+  "Baguette",
+  "Trilliant",
+];
+
+const DEFAULT_COLORS = [
+  "D",
+  "E",
+  "F",
+  "G-H",
+  "I-J",
+  "K-M",
+  "Fancy Yellow",
+  "Fancy Pink",
+  "Fancy Blue",
+  "Cognac/Brown",
+  "Black",
+];
+
+const DEFAULT_CLARITIES = [
+  "FL",
+  "IF",
+  "VVS1",
+  "VVS2",
+  "VS1",
+  "VS2",
+  "SI1",
+  "SI2",
+  "I1",
+  "I2",
+  "I3",
+  "VVS-VS",
+  "VS-SI",
+];
+
 export default function MetalsPage() {
   const { metals, purities, diamondSpecs } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
   const [activeTab, setActiveTab] = useState("metals");
+
+  const [cutMode, setCutMode] = useState("");
+  const [customCut, setCustomCut] = useState("");
+  const [colorMode, setColorMode] = useState("");
+  const [customColor, setCustomColor] = useState("");
+  const [clarityMode, setClarityMode] = useState("");
+  const [customClarity, setCustomClarity] = useState("");
+
+  const existingCuts = Array.from(
+    new Set(
+      diamondSpecs
+        .map((s) => s.cut)
+        .filter((c): c is string => Boolean(c && !DEFAULT_CUTS.includes(c)))
+    )
+  );
+
+  const existingColors = Array.from(
+    new Set(
+      diamondSpecs
+        .map((s) => s.color)
+        .filter((c): c is string => Boolean(c && !DEFAULT_COLORS.includes(c)))
+    )
+  );
+
+  const existingClarities = Array.from(
+    new Set(
+      diamondSpecs
+        .map((s) => s.clarity)
+        .filter((c): c is string => Boolean(c && !DEFAULT_CLARITIES.includes(c)))
+    )
+  );
 
   return (
     <>
@@ -376,18 +462,40 @@ export default function MetalsPage() {
               </div>
               <div className="field">
                 <label>Cut / Shape</label>
-                <select name="cut" defaultValue="">
+                <select
+                  name="cut"
+                  value={cutMode}
+                  onChange={(e) => setCutMode(e.target.value)}
+                >
                   <option value="">-- Optional --</option>
-                  <option>Round</option>
-                  <option>Princess</option>
-                  <option>Oval</option>
-                  <option>Cushion</option>
-                  <option>Emerald</option>
-                  <option>Marquise</option>
-                  <option>Pear</option>
-                  <option>Radiant</option>
-                  <option>Heart</option>
+                  <optgroup label="Standard Shapes">
+                    {DEFAULT_CUTS.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {existingCuts.length > 0 && (
+                    <optgroup label="Saved Custom Shapes">
+                      {existingCuts.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <option value="__custom__">✨ + Enter Custom Cut / Shape...</option>
                 </select>
+                {cutMode === "__custom__" && (
+                  <input
+                    name="customCut"
+                    style={{ marginTop: 6 }}
+                    placeholder="e.g. Asscher, Rose Cut, Kite..."
+                    value={customCut}
+                    onChange={(e) => setCustomCut(e.target.value)}
+                    required
+                  />
+                )}
               </div>
               <div className="field-row">
                 <div className="field">
@@ -414,30 +522,77 @@ export default function MetalsPage() {
               <div className="field-row">
                 <div className="field">
                   <label>Colour</label>
-                  <select name="color" defaultValue="">
+                  <select
+                    name="color"
+                    value={colorMode}
+                    onChange={(e) => setColorMode(e.target.value)}
+                  >
                     <option value="">-- Optional --</option>
-                    <option>D</option>
-                    <option>E</option>
-                    <option>F</option>
-                    <option>G-H</option>
-                    <option>I-J</option>
-                    <option>K-M</option>
+                    <optgroup label="Standard Grades">
+                      {DEFAULT_COLORS.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </optgroup>
+                    {existingColors.length > 0 && (
+                      <optgroup label="Saved Custom Colours">
+                        {existingColors.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <option value="__custom__">✨ + Enter Custom Colour...</option>
                   </select>
+                  {colorMode === "__custom__" && (
+                    <input
+                      name="customColor"
+                      style={{ marginTop: 6 }}
+                      placeholder="e.g. Fancy Green, D-E, Champagne..."
+                      value={customColor}
+                      onChange={(e) => setCustomColor(e.target.value)}
+                      required
+                    />
+                  )}
                 </div>
                 <div className="field">
                   <label>Clarity</label>
-                  <select name="clarity" defaultValue="">
+                  <select
+                    name="clarity"
+                    value={clarityMode}
+                    onChange={(e) => setClarityMode(e.target.value)}
+                  >
                     <option value="">-- Optional --</option>
-                    <option>FL</option>
-                    <option>IF</option>
-                    <option>VVS1</option>
-                    <option>VVS2</option>
-                    <option>VS1</option>
-                    <option>VS2</option>
-                    <option>SI1</option>
-                    <option>SI2</option>
-                    <option>I1</option>
+                    <optgroup label="Standard Grades">
+                      {DEFAULT_CLARITIES.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </optgroup>
+                    {existingClarities.length > 0 && (
+                      <optgroup label="Saved Custom Clarities">
+                        {existingClarities.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <option value="__custom__">✨ + Enter Custom Clarity...</option>
                   </select>
+                  {clarityMode === "__custom__" && (
+                    <input
+                      name="customClarity"
+                      style={{ marginTop: 6 }}
+                      placeholder="e.g. Eye Clean, SI3, VS-SI..."
+                      value={customClarity}
+                      onChange={(e) => setCustomClarity(e.target.value)}
+                      required
+                    />
+                  )}
                 </div>
               </div>
               <div className="field">
