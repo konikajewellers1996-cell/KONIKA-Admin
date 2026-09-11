@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { authenticate } from "../shopify.server";
@@ -6,6 +6,7 @@ import prisma from "../db.server";
 import {
   DEFAULT_DIAMOND_CLARITIES,
   DEFAULT_DIAMOND_COLORS,
+  centsToCarat,
   formatCentsRange,
   qualityLabel,
   rangesOverlap,
@@ -13,6 +14,7 @@ import {
 import {
   parseDiamondExcel,
   buildDiamondExcel,
+  buildDiamondCsv,
   slabDuplicateKey,
 } from "../lib/diamond-excel";
 
@@ -216,7 +218,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         return { ok: false, message: "Choose an Excel file (.xlsx) to import." };
       }
 
-      const rows = parseDiamondExcel(new Uint8Array(await uploaded.arrayBuffer()));
+      const fileName = uploaded.name.toLowerCase();
+      const rows = fileName.endsWith(".csv")
+        ? parseDiamondExcel(await uploaded.text())
+        : parseDiamondExcel(new Uint8Array(await uploaded.arrayBuffer()));
       if (!rows.length) {
         return { ok: false, message: "No pricing rows found in the Excel file." };
       }
@@ -367,18 +372,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 };
 
-const tabButtonStyle = (active: boolean): CSSProperties => ({
-  background: "none",
-  border: "none",
-  borderBottom: active ? "2px solid var(--surface-primary-cta)" : "2px solid transparent",
-  color: active ? "var(--text-primary-heading)" : "var(--text-secondary-content)",
-  padding: "8px 16px",
-  cursor: "pointer",
-  fontWeight: 500,
-  fontSize: "14px",
-  fontFamily: "inherit",
-});
-
 export default function MetalsPage() {
   const { metals, purities, diamondQualities } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
@@ -425,52 +418,75 @@ export default function MetalsPage() {
     quality.slabs.map((slab) => ({ quality, slab })),
   );
 
-  const downloadDiamondExcel = () => {
-    const file = buildDiamondExcel(
-      diamondQualities.flatMap((quality) =>
-        quality.slabs.map((slab) => ({
-          id: slab.id,
-          color: quality.color,
-          clarity: quality.clarity,
-          centsFrom: slab.centsFrom,
-          centsTo: slab.centsTo,
-          pricePerCarat: slab.pricePerCarat,
-          status: slab.status,
-        })),
-      ),
-    );
-    const bytes = new Uint8Array(file.byteLength);
-    bytes.set(file);
-    const blob = new Blob([bytes.buffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
+  const downloadSlabs = diamondQualities.flatMap((quality) =>
+    quality.slabs.map((slab) => ({
+      id: slab.id,
+      color: quality.color,
+      clarity: quality.clarity,
+      centsFrom: slab.centsFrom,
+      centsTo: slab.centsTo,
+      pricePerCarat: slab.pricePerCarat,
+      status: slab.status,
+    })),
+  );
+
+  const triggerDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "diamond-pricing.xlsx";
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
   };
 
+  const downloadDiamondExcel = () => {
+    const buffer = buildDiamondExcel(downloadSlabs);
+    triggerDownload(
+      new Blob([new Uint8Array(buffer)], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      }),
+      "diamond-pricing.xlsx",
+    );
+  };
+
+  const downloadDiamondCsv = () => {
+    triggerDownload(
+      new Blob([buildDiamondCsv(downloadSlabs)], { type: "text/csv;charset=utf-8;" }),
+      "diamond-pricing.csv",
+    );
+  };
+
   return (
     <>
       <div className="page-head">
         <div>
-          <div className="page-title">Metals &amp; purity</div>
-          <div className="page-sub">
-            Configure metals, purities, and diamond pricing by quality and stone size
-          </div>
+          <h2 className="page-title">Metals &amp; diamonds</h2>
+          <p className="page-sub">
+            Configure metals, purities, and diamond pricing by quality and stone size.
+          </p>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: "20px", borderBottom: "1px solid var(--stroke-primary)", marginBottom: "20px", paddingBottom: "2px" }}>
-        <button type="button" onClick={() => setActiveTab("metals")} style={tabButtonStyle(activeTab === "metals")}>
-          Metals &amp; Purity
+      <div className="tab-bar" role="tablist" aria-label="Metals or diamond pricing">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "metals"}
+          className={`tab-btn ${activeTab === "metals" ? "active" : ""}`}
+          onClick={() => setActiveTab("metals")}
+        >
+          Metals &amp; purity
         </button>
-        <button type="button" onClick={() => setActiveTab("diamonds")} style={tabButtonStyle(activeTab === "diamonds")}>
-          Diamond Pricing
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "diamonds"}
+          className={`tab-btn ${activeTab === "diamonds" ? "active" : ""}`}
+          onClick={() => setActiveTab("diamonds")}
+        >
+          Diamond pricing
         </button>
       </div>
 
@@ -736,7 +752,7 @@ export default function MetalsPage() {
                 {editingSlabId ? "Edit pricing slab" : "Add pricing slab"}
               </div>
               <div className="hint" style={{ marginBottom: 12 }}>
-                Size ranges are in cents (1 ct = 100 cents). Ranges are not hard-coded — enter whatever slabs you use.
+                Size is stored in cents (1 ct = 100 cents). A 2.00 ct single diamond is 200 cents, so it will not match a 1–5 cent melee slab.
               </div>
               <Form
                 method="post"
@@ -771,7 +787,7 @@ export default function MetalsPage() {
                       name="centsFrom"
                       type="number"
                       step="any"
-                      min="1"
+                      min="0.01"
                       placeholder="1"
                       value={slabForm.centsFrom}
                       onChange={(e) => setSlabForm((c) => ({ ...c, centsFrom: e.target.value }))}
@@ -784,7 +800,7 @@ export default function MetalsPage() {
                       name="centsTo"
                       type="number"
                       step="any"
-                      min="1"
+                      min="0.01"
                       placeholder="5"
                       value={slabForm.centsTo}
                       onChange={(e) => setSlabForm((c) => ({ ...c, centsTo: e.target.value }))}
@@ -792,6 +808,65 @@ export default function MetalsPage() {
                     />
                   </div>
                 </div>
+                <div className="field-row">
+                  <div className="field">
+                    <label>From (ct)</label>
+                    <input
+                      type="number"
+                      step="0.001"
+                      min="0"
+                      placeholder="0.010"
+                      value={
+                        slabForm.centsFrom === ""
+                          ? ""
+                          : Number.isFinite(Number(slabForm.centsFrom))
+                            ? String(Number((Number(slabForm.centsFrom) / 100).toFixed(4)))
+                            : ""
+                      }
+                      onChange={(e) =>
+                        setSlabForm((c) => ({
+                          ...c,
+                          centsFrom:
+                            e.target.value === ""
+                              ? ""
+                              : String(Number((Number(e.target.value) * 100).toFixed(4))),
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="field">
+                    <label>To (ct)</label>
+                    <input
+                      type="number"
+                      step="0.001"
+                      min="0"
+                      placeholder="0.050"
+                      value={
+                        slabForm.centsTo === ""
+                          ? ""
+                          : Number.isFinite(Number(slabForm.centsTo))
+                            ? String(Number((Number(slabForm.centsTo) / 100).toFixed(4)))
+                            : ""
+                      }
+                      onChange={(e) =>
+                        setSlabForm((c) => ({
+                          ...c,
+                          centsTo:
+                            e.target.value === ""
+                              ? ""
+                              : String(Number((Number(e.target.value) * 100).toFixed(4))),
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+                {slabForm.centsFrom && slabForm.centsTo ? (
+                  <div className="hint" style={{ marginBottom: 12 }}>
+                    {slabForm.centsFrom}–{slabForm.centsTo} cents ={" "}
+                    {centsToCarat(Number(slabForm.centsFrom)).toFixed(3)}–
+                    {centsToCarat(Number(slabForm.centsTo)).toFixed(3)} ct
+                  </div>
+                ) : null}
                 <div className="field-row">
                   <div className="field">
                     <label>Price / carat (₹)</label>
@@ -854,11 +929,14 @@ export default function MetalsPage() {
                 <button className="btn" type="button" onClick={downloadDiamondExcel}>
                   Export Excel
                 </button>
+                <button className="btn" type="button" onClick={downloadDiamondCsv}>
+                  Export CSV
+                </button>
               </div>
               <Form method="post" encType="multipart/form-data">
                 <input type="hidden" name="intent" value="import-diamond-excel" />
                 <div className="field">
-                  <label>Excel file (.xlsx)</label>
+                  <label>Excel / CSV file</label>
                   <input type="file" name="excelFile" accept=".xlsx,.xls,.csv" required />
                 </div>
                 <button className="btn primary" type="submit" disabled={busy}>
@@ -876,6 +954,7 @@ export default function MetalsPage() {
                   <th>Clarity</th>
                   <th>From</th>
                   <th>To</th>
+                  <th>Size (ct)</th>
                   <th>Price / ct</th>
                   <th>Status</th>
                   <th style={{ textAlign: "right", width: 220 }}>Actions</th>
@@ -884,7 +963,7 @@ export default function MetalsPage() {
               <tbody>
                 {diamondQualities.length === 0 ? (
                   <tr>
-                    <td colSpan={7}>
+                    <td colSpan={8}>
                       <div className="empty-state">No diamond qualities yet. Add EF VVS1 (or any Color + Clarity) first.</div>
                     </td>
                   </tr>
@@ -893,7 +972,7 @@ export default function MetalsPage() {
                     <tr key={quality.id}>
                       <td>{quality.color}</td>
                       <td>{quality.clarity}</td>
-                      <td colSpan={3}>
+                      <td colSpan={4}>
                         <div className="hint">No slabs yet for {quality.name}.</div>
                       </td>
                       <td>—</td>
@@ -916,6 +995,9 @@ export default function MetalsPage() {
                         <td>{quality.clarity}</td>
                         <td className="mono">{slab.centsFrom} ¢</td>
                         <td className="mono">{slab.centsTo} ¢</td>
+                        <td className="mono">
+                          {centsToCarat(slab.centsFrom).toFixed(3)}–{centsToCarat(slab.centsTo).toFixed(3)}
+                        </td>
                         <td className="mono">
                           {new Intl.NumberFormat("en-IN").format(slab.pricePerCarat)}
                         </td>
@@ -966,7 +1048,7 @@ export default function MetalsPage() {
                         <tr key={`empty-${quality.id}`}>
                           <td>{quality.color}</td>
                           <td>{quality.clarity}</td>
-                          <td colSpan={3}>
+                          <td colSpan={4}>
                             <div className="hint">No slabs yet for {quality.name}.</div>
                           </td>
                           <td>—</td>

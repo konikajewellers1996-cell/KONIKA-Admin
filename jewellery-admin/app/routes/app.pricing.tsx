@@ -73,10 +73,10 @@ export default function PricingPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-title">Gold rates</div>
-          <div className="page-sub">
-            Update today&apos;s rate per gram (INR). Use Sync all to push new prices to Shopify.
-          </div>
+          <h2 className="page-title">Gold rates</h2>
+          <p className="page-sub">
+            Set today&apos;s gold rate per gram. Saving updates product prices on Shopify in the background.
+          </p>
         </div>
       </div>
 
@@ -86,17 +86,7 @@ export default function PricingPage() {
 
       <div className="panel" style={{ maxWidth: 520 }}>
         <div className="panel-title">Current gold price / gram</div>
-        <div
-          style={{
-            fontFamily: "var(--font-heading)",
-            fontSize: 36,
-            fontWeight: 500,
-            color: "var(--surface-primary-cta)",
-            marginBottom: 2,
-          }}
-        >
-          {formatINR(goldPricePerGram)}
-        </div>
+        <p className="rate-hero">{formatINR(goldPricePerGram)}</p>
         {updatedAt ? (
           <div style={{ fontSize: 12, color: "var(--text-gray-500)", marginBottom: 12 }}>
             Last updated: {new Date(updatedAt).toLocaleString("en-IN", {

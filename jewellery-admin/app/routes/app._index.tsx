@@ -103,41 +103,52 @@ export default function Dashboard() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-title">Welcome back</div>
-          <div className="page-sub">
-            Catalog overview · prices in INR · syncs to Shopify Admin
-          </div>
+          <h2 className="page-title">Welcome back</h2>
+          <p className="page-sub">
+            Today&apos;s catalog snapshot. Prices use the live gold rate and sync to Shopify.
+          </p>
         </div>
         <div className="head-actions">
-          <Link to="/app/products" className="btn primary">
-            Add jewelry
+          <Link to="/app/products?view=edit" className="btn primary">
+            Add product
+          </Link>
+          <Link to="/app/products?view=catalog" className="btn">
+            View products
           </Link>
         </div>
       </div>
 
       <div className="stats">
-        <div className="stat-card">
-          <div className="stat-label">Total products</div>
+        <Link to="/app/products?view=catalog" className="stat-card">
+          <div className="stat-label">Products</div>
           <div className="stat-value">{stats.products}</div>
-          <div className="prod-sub">{stats.syncedProducts} synced to Shopify</div>
-        </div>
-        <div className="stat-card">
+          <div className="prod-sub">{stats.syncedProducts} on Shopify</div>
+        </Link>
+        <Link to="/app/collections" className="stat-card">
           <div className="stat-label">Collections</div>
           <div className="stat-value">{stats.collections}</div>
-          <div className="prod-sub">{stats.syncedCollections} synced to Shopify</div>
-        </div>
-        <div className="stat-card">
+          <div className="prod-sub">{stats.syncedCollections} on Shopify</div>
+        </Link>
+        <Link to="/app/metals" className="stat-card">
           <div className="stat-label">Metal colours</div>
           <div className="stat-value">{stats.metals}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Purity levels</div>
-          <div className="stat-value">{stats.purities}</div>
-        </div>
+          <div className="prod-sub">{stats.purities} purity levels</div>
+        </Link>
+        <Link to="/app/pricing" className="stat-card">
+          <div className="stat-label">Gold / gram</div>
+          <div className="stat-value" style={{ fontSize: 26 }}>{formatINR(goldPricePerGram)}</div>
+          <div className="prod-sub">Update rate</div>
+        </Link>
       </div>
 
+      <div className="dash-grid">
       <div className="panel">
-        <div className="panel-title">Today&apos;s gold rate</div>
+        <div className="panel-title">
+          Purity rates
+          <Link to="/app/pricing" className="panel-link">
+            Update
+          </Link>
+        </div>
         <div className="table-wrap" style={{ border: "none" }}>
           <table className="data">
             <thead>
@@ -172,7 +183,12 @@ export default function Dashboard() {
       </div>
 
       <div className="panel">
-        <div className="panel-title">Collections</div>
+        <div className="panel-title">
+          Collections
+          <Link to="/app/collections" className="panel-link">
+            Manage
+          </Link>
+        </div>
         <div className="coll-grid">
           {collections.map((collection) => (
             <Link
@@ -219,9 +235,15 @@ export default function Dashboard() {
           </Link>
         </div>
       </div>
+      </div>
 
       <div className="panel">
-        <div className="panel-title">Recently added products</div>
+        <div className="panel-title">
+          Recent products
+          <Link to="/app/products?view=catalog" className="panel-link">
+            View all
+          </Link>
+        </div>
         {recent.length === 0 ? (
           <div className="empty-state">
             No products yet.{" "}

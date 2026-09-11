@@ -282,10 +282,10 @@ export default function CollectionsPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-title">Collections</div>
-          <div className="page-sub">
-            Create or edit collections here, then use Sync all to Shopify to push everything
-          </div>
+          <h2 className="page-title">Collections</h2>
+          <p className="page-sub">
+            Create or edit collections, then sync them to Shopify.
+          </p>
         </div>
         <div className="head-actions" style={{ display: "flex", gap: 8 }}>
           <Form method="post" style={{ display: "inline" }}>

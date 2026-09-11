@@ -173,14 +173,25 @@ export function quoteDiamondValue(input: {
   const activeSlabs = (input.quality.slabs || []).filter(
     (slab) => (slab.status || "Active") === "Active",
   );
-  const slab = activeSlabs.find(
-    (item) => averageCents >= item.centsFrom && averageCents <= item.centsTo,
-  );
+  const slab = activeSlabs.find((item) => {
+    const from = Number(item.centsFrom);
+    const to = Number(item.centsTo);
+    return averageCents + 1e-9 >= from && averageCents - 1e-9 <= to;
+  });
 
   if (!slab) {
+    const ranges =
+      activeSlabs.length > 0
+        ? activeSlabs
+            .map(
+              (item) =>
+                `${item.centsFrom}–${item.centsTo} cents (${centsToCarat(item.centsFrom).toFixed(3)}–${centsToCarat(item.centsTo).toFixed(3)} ct)`,
+            )
+            .join("; ")
+        : "none yet";
     return {
       ok: false,
-      message: `No active pricing slab covers ${averageCents.toFixed(2)} cents for ${input.quality.name}.`,
+      message: `Average size is ${averageCents.toFixed(2)} cents (${averageCarat.toFixed(3)} ct/stone). ${input.quality.name} slabs: ${ranges}. Add a slab that covers this size.`,
       totalCarat,
       diamondCount,
       averageCarat,

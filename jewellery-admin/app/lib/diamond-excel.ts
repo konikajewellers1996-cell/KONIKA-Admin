@@ -57,8 +57,21 @@ function pick(row: Record<string, unknown>, aliases: string[]) {
   return "";
 }
 
-export function parseDiamondExcel(data: ArrayBuffer | Uint8Array): DiamondExcelRow[] {
-  const workbook = XLSX.read(data, { type: "array" });
+function workbookToArrayBuffer(workbook: XLSX.WorkBook) {
+  const binary = XLSX.write(workbook, { bookType: "xlsx", type: "binary" }) as string;
+  const buffer = new ArrayBuffer(binary.length);
+  const view = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i += 1) {
+    view[i] = binary.charCodeAt(i) & 0xff;
+  }
+  return buffer;
+}
+
+export function parseDiamondExcel(data: ArrayBuffer | Uint8Array | string): DiamondExcelRow[] {
+  const workbook =
+    typeof data === "string"
+      ? XLSX.read(data, { type: "string" })
+      : XLSX.read(data, { type: "array" });
   const sheetName =
     workbook.SheetNames.find((name) => !/instruction/i.test(name)) ||
     workbook.SheetNames[0];
@@ -94,8 +107,18 @@ export function parseDiamondExcel(data: ArrayBuffer | Uint8Array): DiamondExcelR
       id: cellString(pick(raw, ["id", "slabid"])),
       color,
       clarity,
-      centsFrom: cellNumber(pick(raw, ["fromcent", "fromcents", "centsfrom", "from"])),
-      centsTo: cellNumber(pick(raw, ["tocent", "tocents", "centsto", "to"])),
+      centsFrom: (() => {
+        const cents = cellNumber(pick(raw, ["fromcent", "fromcents", "centsfrom", "from"]));
+        if (Number.isFinite(cents) && cents > 0) return cents;
+        const carat = cellNumber(pick(raw, ["fromct", "fromcarat", "mincarat"]));
+        return Number.isFinite(carat) ? carat * 100 : NaN;
+      })(),
+      centsTo: (() => {
+        const cents = cellNumber(pick(raw, ["tocent", "tocents", "centsto", "to"]));
+        if (Number.isFinite(cents) && cents > 0) return cents;
+        const carat = cellNumber(pick(raw, ["toct", "tocarat", "maxcarat"]));
+        return Number.isFinite(carat) ? carat * 100 : NaN;
+      })(),
       pricePerCarat: cellNumber(
         pick(raw, ["pricepercarat", "priceperct", "price", "pricect"]),
       ),
@@ -120,6 +143,8 @@ export function buildDiamondExcel(slabs: DiamondExportSlab[]) {
           clarity: slab.clarity,
           fromCent: slab.centsFrom,
           toCent: slab.centsTo,
+          fromCt: Number((slab.centsFrom / 100).toFixed(4)),
+          toCt: Number((slab.centsTo / 100).toFixed(4)),
           pricePerCarat: slab.pricePerCarat,
           status: slab.status,
           action: "update",
@@ -131,6 +156,8 @@ export function buildDiamondExcel(slabs: DiamondExportSlab[]) {
             clarity: "VVS1",
             fromCent: 1,
             toCent: 5,
+            fromCt: 0.01,
+            toCt: 0.05,
             pricePerCarat: 100000,
             status: "Active",
             action: "create",
@@ -142,6 +169,8 @@ export function buildDiamondExcel(slabs: DiamondExportSlab[]) {
     { wch: 28 },
     { wch: 10 },
     { wch: 10 },
+    { wch: 12 },
+    { wch: 12 },
     { wch: 12 },
     { wch: 12 },
     { wch: 16 },
@@ -157,10 +186,58 @@ export function buildDiamondExcel(slabs: DiamondExportSlab[]) {
     ["Duplicates (same Color + Clarity + From + To) are skipped; remaining rows still import."],
     ["Overlapping cent ranges for the same quality are also skipped."],
     [],
-    ["Columns", "id", "color", "clarity", "fromCent", "toCent", "pricePerCarat", "status", "action"],
+    ["Columns", "id", "color", "clarity", "fromCent", "toCent", "fromCt", "toCt", "pricePerCarat", "status", "action"],
+    ["1 carat = 100 cents. fromCt/toCt are optional; fromCent/toCent are used when present."],
     ["action values", "create", "update", "delete"],
   ]);
   XLSX.utils.book_append_sheet(workbook, help, "Instructions");
 
-  return XLSX.write(workbook, { type: "array", bookType: "xlsx" }) as Uint8Array;
+  return workbookToArrayBuffer(workbook);
+}
+
+export function buildDiamondCsv(slabs: DiamondExportSlab[]) {
+  const header = [
+    "id",
+    "color",
+    "clarity",
+    "fromCent",
+    "toCent",
+    "fromCt",
+    "toCt",
+    "pricePerCarat",
+    "status",
+    "action",
+  ];
+  const rows =
+    slabs.length > 0
+      ? slabs
+      : [
+          {
+            id: "",
+            color: "EF",
+            clarity: "VVS1",
+            centsFrom: 1,
+            centsTo: 5,
+            pricePerCarat: 100000,
+            status: "Active",
+          },
+        ];
+  const lines = [
+    header.join(","),
+    ...rows.map((slab) =>
+      [
+        slab.id,
+        slab.color,
+        slab.clarity,
+        slab.centsFrom,
+        slab.centsTo,
+        Number((slab.centsFrom / 100).toFixed(4)),
+        Number((slab.centsTo / 100).toFixed(4)),
+        slab.pricePerCarat,
+        slab.status,
+        slabs.length > 0 ? "update" : "create",
+      ].join(","),
+    ),
+  ];
+  return `\uFEFF${lines.join("\r\n")}`;
 }

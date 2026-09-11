@@ -957,16 +957,16 @@ export default function ProductsPage() {
     <>
       <div className="page-head">
         <div>
-          <div className="page-title">
-            {showForm ? (editingId ? "Edit jewelry" : "Add jewelry") : "Jewelry catalog"}
-          </div>
-          <div className="page-sub">
+          <h2 className="page-title">
+            {showForm ? (editingId ? "Edit product" : "Add product") : "Products"}
+          </h2>
+          <p className="page-sub">
             {showForm
               ? editingId
-                ? "Update details, images, and variants — then Sync all to Shopify."
-                : "Upload product & variant images, save locally, then Sync all to Shopify."
-              : `${filteredCatalog.length} product${filteredCatalog.length === 1 ? "" : "s"} in catalog`}
-          </div>
+                ? "Update details, images, and variants, then sync to Shopify."
+                : "Add images and metal variants, save, then sync to Shopify."
+              : `${filteredCatalog.length} product${filteredCatalog.length === 1 ? "" : "s"} in the catalog`}
+          </p>
         </div>
         <div className="head-actions">
           {showForm ? (
@@ -982,14 +982,14 @@ export default function ProductsPage() {
             </button>
           ) : (
             <button type="button" className="btn primary" onClick={startCreate}>
-              Add jewelry
+              Add product
             </button>
           )}
         </div>
       </div>
 
-      {actionData?.message ? (
-        <div className={`flash ${actionData.ok ? "ok" : "err"}`}>{actionData.message}</div>
+              {actionData?.message ? (
+        <div className={`flash ${actionData.ok ? "ok" : "err"}`} role="status">{actionData.message}</div>
       ) : null}
 
       {showForm ? (
@@ -1405,6 +1405,7 @@ export default function ProductsPage() {
                                 }))
                               }
                             />
+                            <div className="hint">Price uses average size: total ct ÷ this count.</div>
                           </div>
                           <div className="field">
                             <label>Stone weight (g)</label>
@@ -1819,7 +1820,9 @@ export default function ProductsPage() {
         <>
           <div className="toolbar">
             <div className="search-wrap">
+              <label htmlFor="product-search">Search products</label>
               <input
+                id="product-search"
                 className="search-input"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -1893,22 +1896,25 @@ export default function ProductsPage() {
                         </span>
                       </td>
                       <td>
-                        <div className="row-actions">
-                          <button
-                            type="button"
-                            className="btn small"
-                            onClick={() => startEdit(product.id)}
-                          >
-                            Edit
-                          </button>
-                          <Form method="post">
-                            <input type="hidden" name="intent" value="delete" />
-                            <input type="hidden" name="id" value={product.id} />
-                            <button className="btn small danger" type="submit" disabled={busy}>
-                              Delete
+                        <details className="action-menu">
+                          <summary>Actions</summary>
+                          <div className="action-pop">
+                            <button
+                              type="button"
+                              className="btn small"
+                              onClick={() => startEdit(product.id)}
+                            >
+                              Edit
                             </button>
-                          </Form>
-                        </div>
+                            <Form method="post">
+                              <input type="hidden" name="intent" value="delete" />
+                              <input type="hidden" name="id" value={product.id} />
+                              <button className="btn small danger" type="submit" disabled={busy}>
+                                Delete
+                              </button>
+                            </Form>
+                          </div>
+                        </details>
                       </td>
                     </tr>
                   ))}

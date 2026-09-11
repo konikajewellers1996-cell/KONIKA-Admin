@@ -11,7 +11,7 @@ export default function App() {
         {/* Cirka/Söhne are licensed brand fonts — Instrument Serif stands in for Cirka, Inter stands in for Söhne until woff2 is self-hosted */}
         <link
           rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital,wght@0,400;1,400&family=Inter:wght@300;400;500;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital,wght@0,400;1,400&family=Inter:wght@400;500;600;700&display=swap"
         />
         <Meta />
         <Links />
