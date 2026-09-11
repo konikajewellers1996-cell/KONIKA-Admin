@@ -7,10 +7,14 @@ import {
   DEFAULT_DIAMOND_CLARITIES,
   DEFAULT_DIAMOND_COLORS,
   formatCentsRange,
-  parseBulkDiamondRows,
   qualityLabel,
   rangesOverlap,
 } from "../lib/diamond-pricing";
+import {
+  parseDiamondExcel,
+  buildDiamondExcel,
+  slabDuplicateKey,
+} from "../lib/diamond-excel";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -206,21 +210,134 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { ok: true, message: "Pricing slab deleted." };
     }
 
-    if (intent === "bulk-diamond-slabs") {
-      const raw = String(form.get("bulkRows") || "").trim();
-      if (!raw) return { ok: false, message: "Paste at least one pricing row." };
-      const rows = parseBulkDiamondRows(raw);
+    if (intent === "import-diamond-excel") {
+      const uploaded = form.get("excelFile");
+      if (!(uploaded instanceof File) || uploaded.size === 0) {
+        return { ok: false, message: "Choose an Excel file (.xlsx) to import." };
+      }
+
+      const rows = parseDiamondExcel(new Uint8Array(await uploaded.arrayBuffer()));
+      if (!rows.length) {
+        return { ok: false, message: "No pricing rows found in the Excel file." };
+      }
+
+      const seenInFile = new Set<string>();
       let created = 0;
+      let updated = 0;
+      let deleted = 0;
+      let skipped = 0;
+
       for (const row of rows) {
         const name = qualityLabel(row.color, row.clarity);
+        const key = slabDuplicateKey(row.color, row.clarity, row.centsFrom, row.centsTo);
+
+        if (!row.color || !row.clarity) {
+          skipped += 1;
+          continue;
+        }
+
+        if (row.action !== "delete") {
+          if (
+            !Number.isFinite(row.centsFrom) ||
+            !Number.isFinite(row.centsTo) ||
+            row.centsFrom <= 0 ||
+            row.centsTo <= 0 ||
+            row.centsFrom > row.centsTo ||
+            !Number.isFinite(row.pricePerCarat) ||
+            row.pricePerCarat < 0
+          ) {
+            skipped += 1;
+            continue;
+          }
+        }
+
+        if (row.action === "create" && seenInFile.has(key)) {
+          skipped += 1;
+          continue;
+        }
+
+        if (row.action === "delete") {
+          const existing = row.id
+            ? await prisma.diamondPricingSlab.findUnique({ where: { id: row.id } })
+            : (
+                await prisma.diamondQuality.findUnique({
+                  where: { color_clarity: { color: row.color, clarity: row.clarity } },
+                  include: { slabs: true },
+                })
+              )?.slabs.find(
+                (slab) => slab.centsFrom === row.centsFrom && slab.centsTo === row.centsTo,
+              );
+          if (!existing) {
+            skipped += 1;
+            continue;
+          }
+          await prisma.diamondPricingSlab.delete({ where: { id: existing.id } });
+          deleted += 1;
+          continue;
+        }
+
         const quality = await prisma.diamondQuality.upsert({
           where: { color_clarity: { color: row.color, clarity: row.clarity } },
           update: { name },
           create: { color: row.color, clarity: row.clarity, name },
         });
+
+        if (row.action === "update") {
+          const existing = row.id
+            ? await prisma.diamondPricingSlab.findUnique({ where: { id: row.id } })
+            : (
+                await prisma.diamondPricingSlab.findFirst({
+                  where: {
+                    qualityId: quality.id,
+                    centsFrom: row.centsFrom,
+                    centsTo: row.centsTo,
+                  },
+                })
+              );
+          if (!existing) {
+            skipped += 1;
+            continue;
+          }
+          const overlap = await assertNoOverlap(
+            quality.id,
+            row.centsFrom,
+            row.centsTo,
+            existing.id,
+          );
+          if (overlap) {
+            skipped += 1;
+            continue;
+          }
+          await prisma.diamondPricingSlab.update({
+            where: { id: existing.id },
+            data: {
+              qualityId: quality.id,
+              centsFrom: row.centsFrom,
+              centsTo: row.centsTo,
+              pricePerCarat: row.pricePerCarat,
+              status: row.status,
+            },
+          });
+          updated += 1;
+          seenInFile.add(key);
+          continue;
+        }
+
+        const exact = await prisma.diamondPricingSlab.findFirst({
+          where: {
+            qualityId: quality.id,
+            centsFrom: row.centsFrom,
+            centsTo: row.centsTo,
+          },
+        });
+        if (exact) {
+          skipped += 1;
+          continue;
+        }
         const overlap = await assertNoOverlap(quality.id, row.centsFrom, row.centsTo);
         if (overlap) {
-          return { ok: false, message: `${name}: ${overlap}` };
+          skipped += 1;
+          continue;
         }
         await prisma.diamondPricingSlab.create({
           data: {
@@ -228,12 +345,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             centsFrom: row.centsFrom,
             centsTo: row.centsTo,
             pricePerCarat: row.pricePerCarat,
-            status: "Active",
+            status: row.status,
           },
         });
         created += 1;
+        seenInFile.add(key);
       }
-      return { ok: true, message: `Imported ${created} pricing slab${created === 1 ? "" : "s"}.` };
+
+      return {
+        ok: true,
+        message: `Excel import finished. Added ${created}, updated ${updated}, deleted ${deleted}, skipped ${skipped} duplicate/invalid row${skipped === 1 ? "" : "s"}.`,
+      };
     }
 
     return { ok: false, message: "Unknown action." };
@@ -302,6 +424,35 @@ export default function MetalsPage() {
   const slabRows = diamondQualities.flatMap((quality) =>
     quality.slabs.map((slab) => ({ quality, slab })),
   );
+
+  const downloadDiamondExcel = () => {
+    const file = buildDiamondExcel(
+      diamondQualities.flatMap((quality) =>
+        quality.slabs.map((slab) => ({
+          id: slab.id,
+          color: quality.color,
+          clarity: quality.clarity,
+          centsFrom: slab.centsFrom,
+          centsTo: slab.centsTo,
+          pricePerCarat: slab.pricePerCarat,
+          status: slab.status,
+        })),
+      ),
+    );
+    const bytes = new Uint8Array(file.byteLength);
+    bytes.set(file);
+    const blob = new Blob([bytes.buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "diamond-pricing.xlsx";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <>
@@ -619,8 +770,8 @@ export default function MetalsPage() {
                     <input
                       name="centsFrom"
                       type="number"
-                      step="1"
-                      min="0.01"
+                      step="any"
+                      min="1"
                       placeholder="1"
                       value={slabForm.centsFrom}
                       onChange={(e) => setSlabForm((c) => ({ ...c, centsFrom: e.target.value }))}
@@ -632,8 +783,8 @@ export default function MetalsPage() {
                     <input
                       name="centsTo"
                       type="number"
-                      step="1"
-                      min="0.01"
+                      step="any"
+                      min="1"
                       placeholder="5"
                       value={slabForm.centsTo}
                       onChange={(e) => setSlabForm((c) => ({ ...c, centsTo: e.target.value }))}
@@ -694,20 +845,24 @@ export default function MetalsPage() {
             </div>
 
             <div className="panel" style={{ marginTop: 18 }}>
-              <div className="panel-title">Bulk add / import</div>
+              <div className="panel-title">Excel export / import</div>
               <div className="hint" style={{ marginBottom: 12 }}>
-                Paste rows as Color, Clarity, From cent, To cent, Price/Ct. Example: EF, VVS1, 1, 5, 100000
+                Export the current rate card, edit prices in Excel, then import. Keep the <strong>id</strong> column to update.
+                Set <strong>action</strong> to <code>delete</code> to remove a row. Duplicate Color + Clarity + From + To rows are skipped; the rest still import.
               </div>
-              <Form method="post">
-                <input type="hidden" name="intent" value="bulk-diamond-slabs" />
+              <div className="row-actions" style={{ marginBottom: 12 }}>
+                <button className="btn" type="button" onClick={downloadDiamondExcel}>
+                  Export Excel
+                </button>
+              </div>
+              <Form method="post" encType="multipart/form-data">
+                <input type="hidden" name="intent" value="import-diamond-excel" />
                 <div className="field">
-                  <textarea
-                    name="bulkRows"
-                    placeholder={"EF, VVS1, 1, 5, 100000\nEF, VVS1, 6, 10, 110000\nGH, VS1, 1, 5, 75000"}
-                  />
+                  <label>Excel file (.xlsx)</label>
+                  <input type="file" name="excelFile" accept=".xlsx,.xls,.csv" required />
                 </div>
-                <button className="btn" type="submit" disabled={busy}>
-                  Import slabs
+                <button className="btn primary" type="submit" disabled={busy}>
+                  Import Excel
                 </button>
               </Form>
             </div>
