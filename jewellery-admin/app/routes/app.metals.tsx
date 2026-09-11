@@ -1,21 +1,55 @@
-import { useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import {
+  DEFAULT_DIAMOND_CLARITIES,
+  DEFAULT_DIAMOND_COLORS,
+  formatCentsRange,
+  parseBulkDiamondRows,
+  qualityLabel,
+  rangesOverlap,
+} from "../lib/diamond-pricing";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
-  const [metals, purities, diamondSpecs] = await Promise.all([
+  const [metals, purities, diamondQualities] = await Promise.all([
     prisma.metalType.findMany({ orderBy: [{ name: "asc" }, { color: "asc" }] }),
     prisma.purityLevel.findMany({
       include: { metal: true },
       orderBy: [{ karat: "asc" }, { label: "asc" }],
     }),
-    prisma.diamondSpec.findMany({ orderBy: { createdAt: "desc" } }),
+    prisma.diamondQuality.findMany({
+      include: { slabs: { orderBy: { centsFrom: "asc" } } },
+      orderBy: [{ color: "asc" }, { clarity: "asc" }],
+    }),
   ]);
-  return { metals, purities, diamondSpecs };
+  return { metals, purities, diamondQualities };
 };
+
+function parsePositiveNumber(value: FormDataEntryValue | null) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+async function assertNoOverlap(
+  qualityId: string,
+  centsFrom: number,
+  centsTo: number,
+  excludeId?: string,
+) {
+  const slabs = await prisma.diamondPricingSlab.findMany({
+    where: { qualityId, ...(excludeId ? { id: { not: excludeId } } : {}) },
+  });
+  const overlap = slabs.find((slab) =>
+    rangesOverlap(centsFrom, centsTo, slab.centsFrom, slab.centsTo),
+  );
+  if (overlap) {
+    return `This range overlaps ${formatCentsRange(overlap.centsFrom, overlap.centsTo)} for the same quality.`;
+  }
+  return null;
+}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   await authenticate.admin(request);
@@ -81,66 +115,125 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { ok: true, message: "Purity deleted." };
     }
 
-    if (intent === "add-diamond-spec") {
-      const name = String(form.get("name") || "").trim();
-      const cutRaw = String(form.get("cut") || "").trim();
-      const customCut = String(form.get("customCut") || "").trim();
-      const cut = cutRaw === "__custom__" ? customCut : cutRaw;
-
-      const caratFrom = Number(form.get("caratFrom"));
-      const caratTo = Number(form.get("caratTo"));
-
+    if (intent === "add-diamond-quality") {
       const colorRaw = String(form.get("color") || "").trim();
       const customColor = String(form.get("customColor") || "").trim();
       const color = colorRaw === "__custom__" ? customColor : colorRaw;
-
       const clarityRaw = String(form.get("clarity") || "").trim();
       const customClarity = String(form.get("customClarity") || "").trim();
       const clarity = clarityRaw === "__custom__" ? customClarity : clarityRaw;
-
-      const price = Number(form.get("price"));
-
-      if (!name) {
-        return { ok: false, message: "Diamond name is required." };
+      if (!color || !clarity) {
+        return { ok: false, message: "Color and clarity are required." };
       }
-
-      const safeCaratFrom = Number.isFinite(caratFrom) && caratFrom > 0 ? caratFrom : null;
-      const safeCaratTo = Number.isFinite(caratTo) && caratTo > 0 ? caratTo : null;
-
-      if (!safeCaratFrom && !safeCaratTo) {
-        return { ok: false, message: "Set at least one valid carat weight or range." };
-      }
-
-      if (safeCaratFrom !== null && safeCaratTo !== null && safeCaratFrom > safeCaratTo) {
-        return { ok: false, message: "From weight cannot be greater than To weight." };
-      }
-
-      if (!Number.isFinite(price) || price < 0) {
-        return { ok: false, message: "Price must be a positive number." };
-      }
-
-      await prisma.diamondSpec.create({
-        data: {
-          name,
-          cut: cut || null,
-          caratFrom: safeCaratFrom,
-          caratTo: safeCaratTo,
-          color: color || null,
-          clarity: clarity || null,
-          price,
-        },
+      const name = qualityLabel(color, clarity);
+      const existing = await prisma.diamondQuality.findUnique({
+        where: { color_clarity: { color, clarity } },
       });
-      return { ok: true, message: `Diamond specification (${name}) added.` };
+      if (existing) return { ok: false, message: `${name} already exists.` };
+      await prisma.diamondQuality.create({ data: { color, clarity, name } });
+      return { ok: true, message: `${name} added.` };
     }
 
-    if (intent === "delete-diamond-spec") {
+    if (intent === "delete-diamond-quality") {
       const id = String(form.get("id") || "");
-      const inUse = await prisma.productVariant.count({ where: { diamondSpecId: id } });
+      const inUse = await prisma.productVariant.count({ where: { diamondQualityId: id } });
       if (inUse > 0) {
-        return { ok: false, message: "This diamond spec is used by products. Remove those variants first." };
+        return {
+          ok: false,
+          message: "This quality is used by products. Saved product rates are kept, but unlink it from variants before deleting.",
+        };
       }
-      await prisma.diamondSpec.delete({ where: { id } });
-      return { ok: true, message: "Diamond specification deleted." };
+      await prisma.diamondQuality.delete({ where: { id } });
+      return { ok: true, message: "Diamond quality deleted." };
+    }
+
+    if (intent === "add-diamond-slab" || intent === "update-diamond-slab") {
+      const qualityId = String(form.get("qualityId") || "");
+      const centsFrom = parsePositiveNumber(form.get("centsFrom"));
+      const centsTo = parsePositiveNumber(form.get("centsTo"));
+      const pricePerCarat = parsePositiveNumber(form.get("pricePerCarat"));
+      const status = String(form.get("status") || "Active") === "Inactive" ? "Inactive" : "Active";
+      const slabId = String(form.get("id") || "");
+
+      if (!qualityId) return { ok: false, message: "Select a diamond quality." };
+      if (!Number.isFinite(centsFrom) || !Number.isFinite(centsTo) || centsFrom <= 0 || centsTo <= 0) {
+        return { ok: false, message: "Enter valid from/to sizes in cents." };
+      }
+      if (centsFrom > centsTo) {
+        return { ok: false, message: "From-cent must be lower than To-cent." };
+      }
+      if (!Number.isFinite(pricePerCarat) || pricePerCarat < 0) {
+        return { ok: false, message: "Price per carat cannot be blank." };
+      }
+
+      const overlap = await assertNoOverlap(
+        qualityId,
+        centsFrom,
+        centsTo,
+        intent === "update-diamond-slab" ? slabId : undefined,
+      );
+      if (overlap) return { ok: false, message: overlap };
+
+      if (intent === "update-diamond-slab") {
+        if (!slabId) return { ok: false, message: "Missing slab id." };
+        await prisma.diamondPricingSlab.update({
+          where: { id: slabId },
+          data: { qualityId, centsFrom, centsTo, pricePerCarat, status },
+        });
+        return { ok: true, message: "Pricing slab updated." };
+      }
+
+      await prisma.diamondPricingSlab.create({
+        data: { qualityId, centsFrom, centsTo, pricePerCarat, status },
+      });
+      return { ok: true, message: "Pricing slab added." };
+    }
+
+    if (intent === "toggle-diamond-slab") {
+      const id = String(form.get("id") || "");
+      const slab = await prisma.diamondPricingSlab.findUnique({ where: { id } });
+      if (!slab) return { ok: false, message: "Slab not found." };
+      await prisma.diamondPricingSlab.update({
+        where: { id },
+        data: { status: slab.status === "Active" ? "Inactive" : "Active" },
+      });
+      return { ok: true, message: "Slab status updated." };
+    }
+
+    if (intent === "delete-diamond-slab") {
+      const id = String(form.get("id") || "");
+      await prisma.diamondPricingSlab.delete({ where: { id } });
+      return { ok: true, message: "Pricing slab deleted." };
+    }
+
+    if (intent === "bulk-diamond-slabs") {
+      const raw = String(form.get("bulkRows") || "").trim();
+      if (!raw) return { ok: false, message: "Paste at least one pricing row." };
+      const rows = parseBulkDiamondRows(raw);
+      let created = 0;
+      for (const row of rows) {
+        const name = qualityLabel(row.color, row.clarity);
+        const quality = await prisma.diamondQuality.upsert({
+          where: { color_clarity: { color: row.color, clarity: row.clarity } },
+          update: { name },
+          create: { color: row.color, clarity: row.clarity, name },
+        });
+        const overlap = await assertNoOverlap(quality.id, row.centsFrom, row.centsTo);
+        if (overlap) {
+          return { ok: false, message: `${name}: ${overlap}` };
+        }
+        await prisma.diamondPricingSlab.create({
+          data: {
+            qualityId: quality.id,
+            centsFrom: row.centsFrom,
+            centsTo: row.centsTo,
+            pricePerCarat: row.pricePerCarat,
+            status: "Active",
+          },
+        });
+        created += 1;
+      }
+      return { ok: true, message: `Imported ${created} pricing slab${created === 1 ? "" : "s"}.` };
     }
 
     return { ok: false, message: "Unknown action." };
@@ -152,87 +245,62 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 };
 
-const DEFAULT_CUTS = [
-  "Round",
-  "Princess",
-  "Oval",
-  "Cushion",
-  "Emerald",
-  "Marquise",
-  "Pear",
-  "Radiant",
-  "Heart",
-  "Asscher",
-  "Baguette",
-  "Trilliant",
-];
-
-const DEFAULT_COLORS = [
-  "D",
-  "E",
-  "F",
-  "G-H",
-  "I-J",
-  "K-M",
-  "Fancy Yellow",
-  "Fancy Pink",
-  "Fancy Blue",
-  "Cognac/Brown",
-  "Black",
-];
-
-const DEFAULT_CLARITIES = [
-  "FL",
-  "IF",
-  "VVS1",
-  "VVS2",
-  "VS1",
-  "VS2",
-  "SI1",
-  "SI2",
-  "I1",
-  "I2",
-  "I3",
-  "VVS-VS",
-  "VS-SI",
-];
+const tabButtonStyle = (active: boolean): CSSProperties => ({
+  background: "none",
+  border: "none",
+  borderBottom: active ? "2px solid var(--surface-primary-cta)" : "2px solid transparent",
+  color: active ? "var(--text-primary-heading)" : "var(--text-secondary-content)",
+  padding: "8px 16px",
+  cursor: "pointer",
+  fontWeight: 500,
+  fontSize: "14px",
+  fontFamily: "inherit",
+});
 
 export default function MetalsPage() {
-  const { metals, purities, diamondSpecs } = useLoaderData<typeof loader>();
+  const { metals, purities, diamondQualities } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
   const [activeTab, setActiveTab] = useState("metals");
-
-  const [cutMode, setCutMode] = useState("");
-  const [customCut, setCustomCut] = useState("");
-  const [colorMode, setColorMode] = useState("");
+  const [colorMode, setColorMode] = useState(DEFAULT_DIAMOND_COLORS[7] || "EF");
   const [customColor, setCustomColor] = useState("");
-  const [clarityMode, setClarityMode] = useState("");
+  const [clarityMode, setClarityMode] = useState("VVS1");
   const [customClarity, setCustomClarity] = useState("");
+  const [editingSlabId, setEditingSlabId] = useState("");
+  const [slabForm, setSlabForm] = useState({
+    qualityId: "",
+    centsFrom: "",
+    centsTo: "",
+    pricePerCarat: "",
+    status: "Active",
+  });
 
-  const existingCuts = Array.from(
-    new Set(
-      diamondSpecs
-        .map((s) => s.cut)
-        .filter((c): c is string => Boolean(c && !DEFAULT_CUTS.includes(c)))
-    )
+  const existingColors = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          diamondQualities
+            .map((q) => q.color)
+            .filter((c) => c && !DEFAULT_DIAMOND_COLORS.includes(c)),
+        ),
+      ),
+    [diamondQualities],
+  );
+  const existingClarities = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          diamondQualities
+            .map((q) => q.clarity)
+            .filter((c) => c && !DEFAULT_DIAMOND_CLARITIES.includes(c)),
+        ),
+      ),
+    [diamondQualities],
   );
 
-  const existingColors = Array.from(
-    new Set(
-      diamondSpecs
-        .map((s) => s.color)
-        .filter((c): c is string => Boolean(c && !DEFAULT_COLORS.includes(c)))
-    )
-  );
-
-  const existingClarities = Array.from(
-    new Set(
-      diamondSpecs
-        .map((s) => s.clarity)
-        .filter((c): c is string => Boolean(c && !DEFAULT_CLARITIES.includes(c)))
-    )
+  const slabRows = diamondQualities.flatMap((quality) =>
+    quality.slabs.map((slab) => ({ quality, slab })),
   );
 
   return (
@@ -241,45 +309,17 @@ export default function MetalsPage() {
         <div>
           <div className="page-title">Metals &amp; purity</div>
           <div className="page-sub">
-            Configure metals, purities, and diamond specifications for jewelry items
+            Configure metals, purities, and diamond pricing by quality and stone size
           </div>
         </div>
       </div>
 
       <div style={{ display: "flex", gap: "20px", borderBottom: "1px solid var(--stroke-primary)", marginBottom: "20px", paddingBottom: "2px" }}>
-        <button
-          type="button"
-          onClick={() => setActiveTab("metals")}
-          style={{
-            background: "none",
-            border: "none",
-            borderBottom: activeTab === "metals" ? "2px solid var(--surface-primary-cta)" : "2px solid transparent",
-            color: activeTab === "metals" ? "var(--text-primary-heading)" : "var(--text-secondary-content)",
-            padding: "8px 16px",
-            cursor: "pointer",
-            fontWeight: 500,
-            fontSize: "14px",
-            fontFamily: "inherit"
-          }}
-        >
+        <button type="button" onClick={() => setActiveTab("metals")} style={tabButtonStyle(activeTab === "metals")}>
           Metals &amp; Purity
         </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("diamonds")}
-          style={{
-            background: "none",
-            border: "none",
-            borderBottom: activeTab === "diamonds" ? "2px solid var(--surface-primary-cta)" : "2px solid transparent",
-            color: activeTab === "diamonds" ? "var(--text-primary-heading)" : "var(--text-secondary-content)",
-            padding: "8px 16px",
-            cursor: "pointer",
-            fontWeight: 500,
-            fontSize: "14px",
-            fontFamily: "inherit"
-          }}
-        >
-          Diamond Specifications
+        <button type="button" onClick={() => setActiveTab("diamonds")} style={tabButtonStyle(activeTab === "diamonds")}>
+          Diamond Pricing
         </button>
       </div>
 
@@ -452,217 +492,341 @@ export default function MetalsPage() {
         </>
       ) : (
         <div className="split-2">
-          <div className="panel">
-            <div className="panel-title">Add diamond specification</div>
-            <Form method="post">
-              <input type="hidden" name="intent" value="add-diamond-spec" />
-              <div className="field">
-                <label>Diamond name</label>
-                <input name="name" placeholder="e.g. Premium Round" required />
+          <div>
+            <div className="panel">
+              <div className="panel-title">Add diamond quality</div>
+              <div className="hint" style={{ marginBottom: 12 }}>
+                Quality is Color + Clarity, for example EF VVS1. Create a quality first, then add size slabs under it.
               </div>
-              <div className="field">
-                <label>Cut / Shape</label>
-                <select
-                  name="cut"
-                  value={cutMode}
-                  onChange={(e) => setCutMode(e.target.value)}
-                >
-                  <option value="">-- Optional --</option>
-                  <optgroup label="Standard Shapes">
-                    {DEFAULT_CUTS.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
+              <Form method="post">
+                <input type="hidden" name="intent" value="add-diamond-quality" />
+                <div className="field-row">
+                  <div className="field">
+                    <label>Color</label>
+                    <select
+                      name="color"
+                      value={colorMode}
+                      onChange={(e) => setColorMode(e.target.value)}
+                    >
+                      <optgroup label="Standard">
+                        {DEFAULT_DIAMOND_COLORS.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </optgroup>
+                      {existingColors.length > 0 ? (
+                        <optgroup label="Saved custom">
+                          {existingColors.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
+                      <option value="__custom__">+ Enter custom color…</option>
+                    </select>
+                    {colorMode === "__custom__" ? (
+                      <input
+                        name="customColor"
+                        style={{ marginTop: 6 }}
+                        placeholder="e.g. Champagne"
+                        value={customColor}
+                        onChange={(e) => setCustomColor(e.target.value)}
+                        required
+                      />
+                    ) : null}
+                  </div>
+                  <div className="field">
+                    <label>Clarity</label>
+                    <select
+                      name="clarity"
+                      value={clarityMode}
+                      onChange={(e) => setClarityMode(e.target.value)}
+                    >
+                      <optgroup label="Standard">
+                        {DEFAULT_DIAMOND_CLARITIES.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </optgroup>
+                      {existingClarities.length > 0 ? (
+                        <optgroup label="Saved custom">
+                          {existingClarities.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
+                      <option value="__custom__">+ Enter custom clarity…</option>
+                    </select>
+                    {clarityMode === "__custom__" ? (
+                      <input
+                        name="customClarity"
+                        style={{ marginTop: 6 }}
+                        placeholder="e.g. Eye Clean"
+                        value={customClarity}
+                        onChange={(e) => setCustomClarity(e.target.value)}
+                        required
+                      />
+                    ) : null}
+                  </div>
+                </div>
+                <button className="btn primary" type="submit" disabled={busy}>
+                  Add diamond quality
+                </button>
+              </Form>
+            </div>
+
+            <div className="panel" style={{ marginTop: 18 }}>
+              <div className="panel-title">
+                {editingSlabId ? "Edit pricing slab" : "Add pricing slab"}
+              </div>
+              <div className="hint" style={{ marginBottom: 12 }}>
+                Size ranges are in cents (1 ct = 100 cents). Ranges are not hard-coded — enter whatever slabs you use.
+              </div>
+              <Form
+                method="post"
+                onSubmit={() => {
+                  if (!editingSlabId) {
+                    setSlabForm((c) => ({ ...c, centsFrom: "", centsTo: "", pricePerCarat: "" }));
+                  }
+                }}
+              >
+                <input type="hidden" name="intent" value={editingSlabId ? "update-diamond-slab" : "add-diamond-slab"} />
+                {editingSlabId ? <input type="hidden" name="id" value={editingSlabId} /> : null}
+                <div className="field">
+                  <label>Diamond quality</label>
+                  <select
+                    name="qualityId"
+                    value={slabForm.qualityId}
+                    onChange={(e) => setSlabForm((c) => ({ ...c, qualityId: e.target.value }))}
+                    required
+                  >
+                    <option value="">Select quality…</option>
+                    {diamondQualities.map((quality) => (
+                      <option key={quality.id} value={quality.id}>
+                        {quality.name}
                       </option>
                     ))}
-                  </optgroup>
-                  {existingCuts.length > 0 && (
-                    <optgroup label="Saved Custom Shapes">
-                      {existingCuts.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  <option value="__custom__">✨ + Enter Custom Cut / Shape...</option>
-                </select>
-                {cutMode === "__custom__" && (
-                  <input
-                    name="customCut"
-                    style={{ marginTop: 6 }}
-                    placeholder="e.g. Asscher, Rose Cut, Kite..."
-                    value={customCut}
-                    onChange={(e) => setCustomCut(e.target.value)}
-                    required
-                  />
-                )}
-              </div>
-              <div className="field-row">
-                <div className="field">
-                  <label>Carat from</label>
-                  <input
-                    name="caratFrom"
-                    type="number"
-                    step="0.001"
-                    min="0"
-                    placeholder="0.500"
-                  />
-                </div>
-                <div className="field">
-                  <label>Carat to</label>
-                  <input
-                    name="caratTo"
-                    type="number"
-                    step="0.001"
-                    min="0"
-                    placeholder="1.000"
-                  />
-                </div>
-              </div>
-              <div className="field-row">
-                <div className="field">
-                  <label>Colour</label>
-                  <select
-                    name="color"
-                    value={colorMode}
-                    onChange={(e) => setColorMode(e.target.value)}
-                  >
-                    <option value="">-- Optional --</option>
-                    <optgroup label="Standard Grades">
-                      {DEFAULT_COLORS.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </optgroup>
-                    {existingColors.length > 0 && (
-                      <optgroup label="Saved Custom Colours">
-                        {existingColors.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                    <option value="__custom__">✨ + Enter Custom Colour...</option>
                   </select>
-                  {colorMode === "__custom__" && (
+                </div>
+                <div className="field-row">
+                  <div className="field">
+                    <label>From (cents)</label>
                     <input
-                      name="customColor"
-                      style={{ marginTop: 6 }}
-                      placeholder="e.g. Fancy Green, D-E, Champagne..."
-                      value={customColor}
-                      onChange={(e) => setCustomColor(e.target.value)}
+                      name="centsFrom"
+                      type="number"
+                      step="1"
+                      min="0.01"
+                      placeholder="1"
+                      value={slabForm.centsFrom}
+                      onChange={(e) => setSlabForm((c) => ({ ...c, centsFrom: e.target.value }))}
                       required
                     />
-                  )}
-                </div>
-                <div className="field">
-                  <label>Clarity</label>
-                  <select
-                    name="clarity"
-                    value={clarityMode}
-                    onChange={(e) => setClarityMode(e.target.value)}
-                  >
-                    <option value="">-- Optional --</option>
-                    <optgroup label="Standard Grades">
-                      {DEFAULT_CLARITIES.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </optgroup>
-                    {existingClarities.length > 0 && (
-                      <optgroup label="Saved Custom Clarities">
-                        {existingClarities.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-                    <option value="__custom__">✨ + Enter Custom Clarity...</option>
-                  </select>
-                  {clarityMode === "__custom__" && (
+                  </div>
+                  <div className="field">
+                    <label>To (cents)</label>
                     <input
-                      name="customClarity"
-                      style={{ marginTop: 6 }}
-                      placeholder="e.g. Eye Clean, SI3, VS-SI..."
-                      value={customClarity}
-                      onChange={(e) => setCustomClarity(e.target.value)}
+                      name="centsTo"
+                      type="number"
+                      step="1"
+                      min="0.01"
+                      placeholder="5"
+                      value={slabForm.centsTo}
+                      onChange={(e) => setSlabForm((c) => ({ ...c, centsTo: e.target.value }))}
                       required
                     />
-                  )}
+                  </div>
                 </div>
+                <div className="field-row">
+                  <div className="field">
+                    <label>Price / carat (₹)</label>
+                    <input
+                      name="pricePerCarat"
+                      type="number"
+                      step="1"
+                      min="0"
+                      placeholder="100000"
+                      value={slabForm.pricePerCarat}
+                      onChange={(e) => setSlabForm((c) => ({ ...c, pricePerCarat: e.target.value }))}
+                      required
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Status</label>
+                    <select
+                      name="status"
+                      value={slabForm.status}
+                      onChange={(e) => setSlabForm((c) => ({ ...c, status: e.target.value }))}
+                    >
+                      <option>Active</option>
+                      <option>Inactive</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="row-actions">
+                  <button className="btn primary" type="submit" disabled={busy || diamondQualities.length === 0}>
+                    {editingSlabId ? "Save slab" : "Add pricing slab"}
+                  </button>
+                  {editingSlabId ? (
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={() => {
+                        setEditingSlabId("");
+                        setSlabForm({
+                          qualityId: slabForm.qualityId,
+                          centsFrom: "",
+                          centsTo: "",
+                          pricePerCarat: "",
+                          status: "Active",
+                        });
+                      }}
+                    >
+                      Cancel edit
+                    </button>
+                  ) : null}
+                </div>
+              </Form>
+            </div>
+
+            <div className="panel" style={{ marginTop: 18 }}>
+              <div className="panel-title">Bulk add / import</div>
+              <div className="hint" style={{ marginBottom: 12 }}>
+                Paste rows as Color, Clarity, From cent, To cent, Price/Ct. Example: EF, VVS1, 1, 5, 100000
               </div>
-              <div className="field">
-                <label>Price (₹)</label>
-                <input
-                  name="price"
-                  type="number"
-                  step="1"
-                  min="0"
-                  placeholder="Price of this stone range"
-                  required
-                />
-              </div>
-              <button className="btn primary" type="submit" disabled={busy}>
-                Add diamond specification
-              </button>
-            </Form>
+              <Form method="post">
+                <input type="hidden" name="intent" value="bulk-diamond-slabs" />
+                <div className="field">
+                  <textarea
+                    name="bulkRows"
+                    placeholder={"EF, VVS1, 1, 5, 100000\nEF, VVS1, 6, 10, 110000\nGH, VS1, 1, 5, 75000"}
+                  />
+                </div>
+                <button className="btn" type="submit" disabled={busy}>
+                  Import slabs
+                </button>
+              </Form>
+            </div>
           </div>
 
           <div className="table-wrap">
             <table className="data">
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>Cut</th>
-                  <th>Carat Range</th>
-                  <th>Colour</th>
+                  <th>Color</th>
                   <th>Clarity</th>
-                  <th>Price (₹)</th>
-                  <th style={{ textAlign: "right", width: 90 }}>Actions</th>
+                  <th>From</th>
+                  <th>To</th>
+                  <th>Price / ct</th>
+                  <th>Status</th>
+                  <th style={{ textAlign: "right", width: 220 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {diamondSpecs.length === 0 ? (
+                {diamondQualities.length === 0 ? (
                   <tr>
                     <td colSpan={7}>
-                      <div className="empty-state">No diamond specifications yet.</div>
+                      <div className="empty-state">No diamond qualities yet. Add EF VVS1 (or any Color + Clarity) first.</div>
                     </td>
                   </tr>
+                ) : slabRows.length === 0 ? (
+                  diamondQualities.map((quality) => (
+                    <tr key={quality.id}>
+                      <td>{quality.color}</td>
+                      <td>{quality.clarity}</td>
+                      <td colSpan={3}>
+                        <div className="hint">No slabs yet for {quality.name}.</div>
+                      </td>
+                      <td>—</td>
+                      <td>
+                        <Form method="post" className="row-actions">
+                          <input type="hidden" name="intent" value="delete-diamond-quality" />
+                          <input type="hidden" name="id" value={quality.id} />
+                          <button className="btn small danger" type="submit" disabled={busy}>
+                            Delete quality
+                          </button>
+                        </Form>
+                      </td>
+                    </tr>
+                  ))
                 ) : (
-                  diamondSpecs.map((spec) => {
-                    const rangeText =
-                      spec.caratFrom !== null && spec.caratFrom !== undefined && spec.caratTo !== null && spec.caratTo !== undefined
-                        ? `${Number(spec.caratFrom).toFixed(3)} - ${Number(spec.caratTo).toFixed(3)} ct`
-                        : spec.caratFrom !== null && spec.caratFrom !== undefined
-                          ? `${Number(spec.caratFrom).toFixed(3)} ct`
-                          : spec.caratTo !== null && spec.caratTo !== undefined
-                            ? `${Number(spec.caratTo).toFixed(3)} ct`
-                            : "—";
-
-                    return (
-                      <tr key={spec.id}>
-                        <td>{spec.name || "Unnamed diamond"}</td>
-                        <td>{spec.cut || "—"}</td>
-                        <td className="mono">{rangeText}</td>
-                        <td>{spec.color || "—"}</td>
-                        <td>{spec.clarity || "—"}</td>
-                        <td className="mono">{new Intl.NumberFormat("en-IN").format(spec.price)}</td>
+                  <>
+                    {slabRows.map(({ quality, slab }) => (
+                      <tr key={slab.id}>
+                        <td>{quality.color}</td>
+                        <td>{quality.clarity}</td>
+                        <td className="mono">{slab.centsFrom} ¢</td>
+                        <td className="mono">{slab.centsTo} ¢</td>
+                        <td className="mono">
+                          {new Intl.NumberFormat("en-IN").format(slab.pricePerCarat)}
+                        </td>
                         <td>
-                          <Form method="post" className="row-actions">
-                            <input type="hidden" name="intent" value="delete-diamond-spec" />
-                            <input type="hidden" name="id" value={spec.id} />
-                            <button className="btn small danger" type="submit" disabled={busy}>
-                              Delete
+                          <span className={`badge ${slab.status === "Active" ? "active" : "draft"}`}>
+                            {slab.status}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="row-actions">
+                            <button
+                              className="btn small"
+                              type="button"
+                              onClick={() => {
+                                setEditingSlabId(slab.id);
+                                setSlabForm({
+                                  qualityId: quality.id,
+                                  centsFrom: String(slab.centsFrom),
+                                  centsTo: String(slab.centsTo),
+                                  pricePerCarat: String(slab.pricePerCarat),
+                                  status: slab.status,
+                                });
+                              }}
+                            >
+                              Edit
                             </button>
-                          </Form>
+                            <Form method="post">
+                              <input type="hidden" name="intent" value="toggle-diamond-slab" />
+                              <input type="hidden" name="id" value={slab.id} />
+                              <button className="btn small" type="submit" disabled={busy}>
+                                {slab.status === "Active" ? "Off" : "On"}
+                              </button>
+                            </Form>
+                            <Form method="post">
+                              <input type="hidden" name="intent" value="delete-diamond-slab" />
+                              <input type="hidden" name="id" value={slab.id} />
+                              <button className="btn small danger" type="submit" disabled={busy}>
+                                Delete
+                              </button>
+                            </Form>
+                          </div>
                         </td>
                       </tr>
-                    );
-                  })
+                    ))}
+                    {diamondQualities
+                      .filter((quality) => quality.slabs.length === 0)
+                      .map((quality) => (
+                        <tr key={`empty-${quality.id}`}>
+                          <td>{quality.color}</td>
+                          <td>{quality.clarity}</td>
+                          <td colSpan={3}>
+                            <div className="hint">No slabs yet for {quality.name}.</div>
+                          </td>
+                          <td>—</td>
+                          <td>
+                            <Form method="post" className="row-actions">
+                              <input type="hidden" name="intent" value="delete-diamond-quality" />
+                              <input type="hidden" name="id" value={quality.id} />
+                              <button className="btn small danger" type="submit" disabled={busy}>
+                                Delete quality
+                              </button>
+                            </Form>
+                          </td>
+                        </tr>
+                      ))}
+                  </>
                 )}
               </tbody>
             </table>

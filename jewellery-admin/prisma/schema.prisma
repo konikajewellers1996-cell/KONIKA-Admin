@@ -101,7 +101,9 @@ model ProductVariant {
   stoneType          String       @default("None")
   stoneWeight        Float        @default(0)
   diamondCategory    String       @default("")
-  diamondSpecId      String?
+  diamondQualityId   String?
+  diamondCount       Int          @default(1)
+  pricePerCarat      Float        @default(0)
   wastagePercent     Float        @default(0)
   makingChargeType   String       @default("percent")
   makingChargeValue  Float        @default(0)
@@ -114,20 +116,33 @@ model ProductVariant {
   updatedAt          DateTime     @updatedAt
   product            Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
   metal              MetalType    @relation(fields: [metalId], references: [id])
-  purity             PurityLevel  @relation(fields: [purityId], references: [id])
-  diamondSpec        DiamondSpec? @relation(fields: [diamondSpecId], references: [id], onDelete: SetNull)
+  purity             PurityLevel     @relation(fields: [purityId], references: [id])
+  diamondQuality     DiamondQuality? @relation(fields: [diamondQualityId], references: [id], onDelete: SetNull)
 }
 
-model DiamondSpec {
-  id        String           @id @default(cuid())
-  name      String           @default("")
-  cut       String?
-  caratFrom Float?
-  caratTo   Float?
-  color     String?
-  clarity   String?
-  price     Float
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
+model DiamondQuality {
+  id        String               @id @default(cuid())
+  color     String
+  clarity   String
+  name      String
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+  slabs     DiamondPricingSlab[]
   variants  ProductVariant[]
+
+  @@unique([color, clarity])
+}
+
+model DiamondPricingSlab {
+  id            String         @id @default(cuid())
+  qualityId     String
+  centsFrom     Float
+  centsTo       Float
+  pricePerCarat Float
+  status        String         @default("Active")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  quality       DiamondQuality @relation(fields: [qualityId], references: [id], onDelete: Cascade)
+
+  @@index([qualityId, status])
 }
