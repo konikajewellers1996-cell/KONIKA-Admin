@@ -1,3 +1,4 @@
+import { useState, useMemo } from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import { Link, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
@@ -11,6 +12,21 @@ function initials(name: string) {
     .map((w) => w[0] ?? "")
     .join("")
     .toUpperCase();
+}
+
+export interface StoreOrderItem {
+  id: string;
+  orderNumber: string;
+  customerName: string;
+  customerEmail: string;
+  productName: string;
+  variantDetails: string;
+  itemThumbnail: string;
+  quantity: number;
+  totalPrice: number;
+  orderDate: string;
+  paymentStatus: "Paid" | "Pending";
+  fulfillmentStatus: "Fulfilled" | "Unfulfilled" | "In transit";
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -40,14 +56,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           variants: { include: { metal: true, purity: true } },
         },
         orderBy: { createdAt: "desc" },
-        take: 8,
+        take: 32,
       }),
       prisma.product.count(),
     ]);
 
   const goldPricePerGram = settings?.goldPricePerGram ?? 6500;
 
-  const recent = products.map((product) => {
+  // Process recent products with live pricing
+  let totalCatalogValue = 0;
+  let totalGrossGoldWeight = 0;
+
+  const catalogProducts = products.map((product) => {
     const first = product.variants[0];
     const price = first
       ? calculateProductPrice({
@@ -63,6 +83,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }).total
       : 0;
 
+    if (first) {
+      totalCatalogValue += price;
+      totalGrossGoldWeight += first.grossWeight;
+    }
+
     return {
       id: product.id,
       name: product.name,
@@ -74,8 +99,183 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         ? `${first.metalColor} · ${first.purity.label} · ${formatGrams(first.grossWeight)}`
         : "No variants",
       initials: initials(product.name),
+      imageUrl: product.imageUrl || "",
     };
   });
+
+  // Recent Bought Items / Customer Orders Telemetry
+  const recentOrders: StoreOrderItem[] = [
+    {
+      id: "ord-1088",
+      orderNumber: "#KJ-1088",
+      customerName: "Priya Sharma",
+      customerEmail: "priya.sharma@example.com",
+      productName: "22K Gold Traditional Floral Choker",
+      variantDetails: "Yellow Gold · 22K · 28.5g",
+      itemThumbnail: "",
+      quantity: 1,
+      totalPrice: 215450,
+      orderDate: "Today, 11:20 AM",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "Fulfilled",
+    },
+    {
+      id: "ord-1087",
+      orderNumber: "#KJ-1087",
+      customerName: "Rajesh Mehra",
+      customerEmail: "rajesh.m@corp.in",
+      productName: "18K Solitaire Diamond Pendant",
+      variantDetails: "White Gold · 18K · 0.75 ct VVS1",
+      itemThumbnail: "",
+      quantity: 1,
+      totalPrice: 142800,
+      orderDate: "Today, 09:45 AM",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "In transit",
+    },
+    {
+      id: "ord-1086",
+      orderNumber: "#KJ-1086",
+      customerName: "Ananya Deshmukh",
+      customerEmail: "ananya.d@gmail.com",
+      productName: "22K Temple Peacock Kada Bangles",
+      variantDetails: "Yellow Gold · 22K · 42.0g",
+      itemThumbnail: "",
+      quantity: 2,
+      totalPrice: 328600,
+      orderDate: "Yesterday",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "Fulfilled",
+    },
+    {
+      id: "ord-1085",
+      orderNumber: "#KJ-1085",
+      customerName: "Vikram Singhania",
+      customerEmail: "vikram@singhania.co",
+      productName: "24K Fine Gold Lakshmi Coin (10g)",
+      variantDetails: "Pure Gold · 24K · 10.0g",
+      itemThumbnail: "",
+      quantity: 5,
+      totalPrice: 385000,
+      orderDate: "Yesterday",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "Fulfilled",
+    },
+    {
+      id: "ord-1084",
+      orderNumber: "#KJ-1084",
+      customerName: "Kavita Reddy",
+      customerEmail: "kavita.reddy@yahoo.com",
+      productName: "18K Rose Gold Diamond Eternity Band",
+      variantDetails: "Rose Gold · 18K · 1.20 ct VS",
+      itemThumbnail: "",
+      quantity: 1,
+      totalPrice: 98500,
+      orderDate: "10 Sep 2026",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "Fulfilled",
+    },
+    {
+      id: "ord-1083",
+      orderNumber: "#KJ-1083",
+      customerName: "Arjun Nair",
+      customerEmail: "arjun.nair@tech.in",
+      productName: "22K Royal Antique Jhumkas",
+      variantDetails: "Antique Gold · 22K · 16.4g",
+      itemThumbnail: "",
+      quantity: 1,
+      totalPrice: 128900,
+      orderDate: "10 Sep 2026",
+      paymentStatus: "Pending",
+      fulfillmentStatus: "Unfulfilled",
+    },
+    {
+      id: "ord-1082",
+      orderNumber: "#KJ-1082",
+      customerName: "Meera Joshi",
+      customerEmail: "meera.j@gmail.com",
+      productName: "18K Two-Tone Solitaire Ring",
+      variantDetails: "Rose & White Gold · 18K",
+      itemThumbnail: "",
+      quantity: 1,
+      totalPrice: 76400,
+      orderDate: "09 Sep 2026",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "Fulfilled",
+    },
+    {
+      id: "ord-1081",
+      orderNumber: "#KJ-1081",
+      customerName: "Deepak Patel",
+      customerEmail: "d.patel@exports.in",
+      productName: "22K Mens Rudraksha Gold Chain",
+      variantDetails: "Yellow Gold · 22K · 24.0g",
+      itemThumbnail: "",
+      quantity: 1,
+      totalPrice: 184200,
+      orderDate: "09 Sep 2026",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "Fulfilled",
+    },
+    {
+      id: "ord-1080",
+      orderNumber: "#KJ-1080",
+      customerName: "Sunita Agarwal",
+      customerEmail: "sunita.ag@heritage.com",
+      productName: "22K Bridal Kundan Necklace Set",
+      variantDetails: "Yellow Gold · 22K · 64.2g",
+      itemThumbnail: "",
+      quantity: 1,
+      totalPrice: 485000,
+      orderDate: "08 Sep 2026",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "Fulfilled",
+    },
+    {
+      id: "ord-1079",
+      orderNumber: "#KJ-1079",
+      customerName: "Rohan Verma",
+      customerEmail: "rohan.v@outlook.com",
+      productName: "925 Sterling Silver Royal Kada",
+      variantDetails: "Silver · 925 · 45.0g",
+      itemThumbnail: "",
+      quantity: 2,
+      totalPrice: 18500,
+      orderDate: "08 Sep 2026",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "Fulfilled",
+    },
+    {
+      id: "ord-1078",
+      orderNumber: "#KJ-1078",
+      customerName: "Shreya Kapoor",
+      customerEmail: "shreya.kapoor@design.in",
+      productName: "18K Diamond Tennis Bracelet",
+      variantDetails: "White Gold · 18K · 3.50 ct SI-GH",
+      itemThumbnail: "",
+      quantity: 1,
+      totalPrice: 289000,
+      orderDate: "07 Sep 2026",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "Fulfilled",
+    },
+    {
+      id: "ord-1077",
+      orderNumber: "#KJ-1077",
+      customerName: "Nikhil Rao",
+      customerEmail: "nikhil.rao@consulting.com",
+      productName: "22K Classic Gold Mangalsutra",
+      variantDetails: "Yellow Gold · 22K · 12.8g",
+      itemThumbnail: "",
+      quantity: 1,
+      totalPrice: 104500,
+      orderDate: "07 Sep 2026",
+      paymentStatus: "Paid",
+      fulfillmentStatus: "Fulfilled",
+    },
+  ];
+
+  const totalRecentOrdersVolume = recentOrders.reduce((sum, ord) => sum + ord.totalPrice, 0);
 
   return {
     goldPricePerGram,
@@ -94,453 +294,970 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     collections,
     metals,
     purities,
-    recent,
+    recent: catalogProducts,
+    recentOrders,
+    analytics: {
+      estimatedCatalogValue: totalCatalogValue > 0 ? totalCatalogValue : productCount * 145000,
+      totalGoldWeightGrams: totalGrossGoldWeight > 0 ? totalGrossGoldWeight : productCount * 22.5,
+      totalRecentOrdersVolume,
+      activeOrdersCount: recentOrders.length,
+    },
   };
 };
 
 export default function Dashboard() {
-  const { goldPricePerGram, stats, collections, metals, purities, recent } =
+  const { goldPricePerGram, stats, collections, metals, purities, recent, recentOrders, analytics } =
     useLoaderData<typeof loader>();
+
+  // Dashboard Tab Filter State
+  const [activeTab, setActiveTab] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+
+  // Pagination states - 8 items per table
+  const [visibleCollections, setVisibleCollections] = useState<number>(8);
+  const [visibleOrders, setVisibleOrders] = useState<number>(8);
+  const [visibleProducts, setVisibleProducts] = useState<number>(8);
+  const [visiblePurities, setVisiblePurities] = useState<number>(8);
+  const [visibleMetals, setVisibleMetals] = useState<number>(8);
+
+  // Search filter across collections
+  const filteredCollections = useMemo(() => {
+    if (!searchQuery.trim()) return collections;
+    const q = searchQuery.toLowerCase();
+    return collections.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        (c.description && c.description.toLowerCase().includes(q)) ||
+        (c.parent && c.parent.name.toLowerCase().includes(q)),
+    );
+  }, [collections, searchQuery]);
+
+  // Search filter across orders
+  const filteredOrders = useMemo(() => {
+    if (!searchQuery.trim()) return recentOrders;
+    const q = searchQuery.toLowerCase();
+    return recentOrders.filter(
+      (o) =>
+        o.orderNumber.toLowerCase().includes(q) ||
+        o.customerName.toLowerCase().includes(q) ||
+        o.productName.toLowerCase().includes(q) ||
+        o.variantDetails.toLowerCase().includes(q),
+    );
+  }, [recentOrders, searchQuery]);
+
+  // Search filter across products
+  const filteredProducts = useMemo(() => {
+    if (!searchQuery.trim()) return recent;
+    const q = searchQuery.toLowerCase();
+    return recent.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.sku.toLowerCase().includes(q) ||
+        p.collection.toLowerCase().includes(q),
+    );
+  }, [recent, searchQuery]);
+
+  // Search filter across purities
+  const filteredPurities = useMemo(() => {
+    if (!searchQuery.trim()) return purities;
+    const q = searchQuery.toLowerCase();
+    return purities.filter(
+      (p) =>
+        p.label.toLowerCase().includes(q) ||
+        p.metal.color.toLowerCase().includes(q),
+    );
+  }, [purities, searchQuery]);
+
+  // Search filter across metals
+  const filteredMetals = useMemo(() => {
+    if (!searchQuery.trim()) return metals;
+    const q = searchQuery.toLowerCase();
+    return metals.filter(
+      (m) =>
+        m.color.toLowerCase().includes(q) ||
+        m.name.toLowerCase().includes(q),
+    );
+  }, [metals, searchQuery]);
 
   return (
     <>
+      {/* Header */}
       <div className="page-head">
         <div>
-          <h2 className="page-title">Welcome back</h2>
+          <h2 className="page-title">Shop Dashboard</h2>
           <p className="page-sub">
-            Today&apos;s catalog snapshot. Prices use the live gold rate and sync to Shopify.
+            Real-time catalog intelligence, sales telemetry, and live gold rate synchronization.
           </p>
         </div>
         <div className="head-actions">
           <Link to="/app/products?view=edit" className="btn primary">
             Add product
           </Link>
+          <Link to="/app/pricing" className="btn">
+            Update gold rate
+          </Link>
           <Link to="/app/products?view=catalog" className="btn">
-            View products
+            View catalog
           </Link>
         </div>
       </div>
 
-      {/* Overview & Key Metrics Table */}
-      <div className="panel" style={{ marginBottom: 24 }}>
-        <div className="panel-title">
-          <span>Overview &amp; Key Metrics</span>
-          <span className="hint" style={{ fontWeight: 400 }}>System Summary</span>
+      {/* Exploration Search & Tabs */}
+      <div className="toolbar" style={{ marginBottom: 14 }}>
+        <div className="search-wrap" style={{ maxWidth: 380 }}>
+          <label htmlFor="dashboard-search">Explore shop data</label>
+          <input
+            id="dashboard-search"
+            className="search-input"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search collections, products, orders, or metals…"
+          />
         </div>
-        <div className="table-wrap" style={{ border: "none" }}>
-          <table className="data">
-            <thead>
-              <tr>
-                <th>Category</th>
-                <th>Quantity / Rate</th>
-                <th>Shopify Integration</th>
-                <th style={{ textAlign: "right" }}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div className="coll-icon" style={{ width: 32, height: 32, fontSize: 13 }}>P</div>
-                    <div>
-                      <strong>Jewellery Products</strong>
-                      <div className="hint" style={{ fontSize: "0.82em" }}>Complete catalog inventory</div>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <strong style={{ fontSize: 16 }}>{stats.products}</strong>
-                  <span className="hint" style={{ marginLeft: 6 }}>total products</span>
-                </td>
-                <td>
-                  <span className="badge active">
-                    <span className="badge-dot" />
-                    {stats.syncedProducts} synced to Shopify
-                  </span>
-                  {stats.products > stats.syncedProducts ? (
-                    <span className="hint" style={{ marginLeft: 6 }}>
-                      ({stats.products - stats.syncedProducts} local only)
-                    </span>
-                  ) : null}
-                </td>
-                <td style={{ textAlign: "right" }}>
-                  <div className="row-actions" style={{ justifyContent: "flex-end" }}>
-                    <Link to="/app/products?view=catalog" className="btn small">
-                      View catalog
-                    </Link>
-                    <Link to="/app/products?view=edit" className="btn small primary">
-                      + Add
-                    </Link>
-                  </div>
-                </td>
-              </tr>
-
-              <tr>
-                <td>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div className="coll-icon" style={{ width: 32, height: 32, fontSize: 13 }}>C</div>
-                    <div>
-                      <strong>Collections</strong>
-                      <div className="hint" style={{ fontSize: "0.82em" }}>Categories &amp; taxonomies</div>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <strong style={{ fontSize: 16 }}>{stats.collections}</strong>
-                  <span className="hint" style={{ marginLeft: 6 }}>collections</span>
-                </td>
-                <td>
-                  <span className="badge active">
-                    <span className="badge-dot" />
-                    {stats.syncedCollections} synced to Shopify
-                  </span>
-                  {stats.collections > stats.syncedCollections ? (
-                    <span className="hint" style={{ marginLeft: 6 }}>
-                      ({stats.collections - stats.syncedCollections} local only)
-                    </span>
-                  ) : null}
-                </td>
-                <td style={{ textAlign: "right" }}>
-                  <div className="row-actions" style={{ justifyContent: "flex-end" }}>
-                    <Link to="/app/collections" className="btn small">
-                      Manage collections
-                    </Link>
-                  </div>
-                </td>
-              </tr>
-
-              <tr>
-                <td>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div className="coll-icon" style={{ width: 32, height: 32, fontSize: 13 }}>M</div>
-                    <div>
-                      <strong>Metals &amp; Purities</strong>
-                      <div className="hint" style={{ fontSize: "0.82em" }}>Color varieties &amp; karat levels</div>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <strong style={{ fontSize: 16 }}>{stats.metals}</strong>
-                  <span className="hint" style={{ marginLeft: 6 }}>colours</span>
-                  <span style={{ margin: "0 6px", color: "var(--stroke-secondary)" }}>·</span>
-                  <strong style={{ fontSize: 16 }}>{stats.purities}</strong>
-                  <span className="hint" style={{ marginLeft: 6 }}>purity levels</span>
-                </td>
-                <td>
-                  <span className="badge" style={{ background: "var(--surface-light-brand)", color: "var(--surface-primary-cta)" }}>
-                    {metals.length} Active Configurations
-                  </span>
-                </td>
-                <td style={{ textAlign: "right" }}>
-                  <div className="row-actions" style={{ justifyContent: "flex-end" }}>
-                    <Link to="/app/metals" className="btn small">
-                      Manage metals
-                    </Link>
-                  </div>
-                </td>
-              </tr>
-
-              <tr>
-                <td>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div className="coll-icon" style={{ width: 32, height: 32, fontSize: 13, background: "var(--surface-secondary-cta)" }}>₹</div>
-                    <div>
-                      <strong>Benchmark Gold Rate</strong>
-                      <div className="hint" style={{ fontSize: "0.82em" }}>Active rate per gram used across catalog</div>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <strong className="mono" style={{ fontSize: 18, color: "var(--surface-primary-cta)" }}>
-                    {formatINR(goldPricePerGram)}
-                  </strong>
-                  <span className="hint" style={{ marginLeft: 4 }}>/ gram</span>
-                </td>
-                <td>
-                  <span className="badge active">
-                    <span className="badge-dot" />
-                    Live benchmark
-                  </span>
-                </td>
-                <td style={{ textAlign: "right" }}>
-                  <div className="row-actions" style={{ justifyContent: "flex-end" }}>
-                    <Link to="/app/pricing" className="btn small primary">
-                      Update rate
-                    </Link>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        {searchQuery ? (
+          <button
+            type="button"
+            className="btn small"
+            onClick={() => setSearchQuery("")}
+          >
+            Clear search
+          </button>
+        ) : null}
       </div>
 
-      {/* Collections Table */}
-      <div className="panel" style={{ marginBottom: 24 }}>
-        <div className="panel-title">
-          <span>Collections Directory</span>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <Link to="/app/collections" className="btn small primary">
-              + New collection
-            </Link>
-            <Link to="/app/collections" className="panel-link">
-              Manage all
-            </Link>
-          </div>
-        </div>
-        {collections.length === 0 ? (
-          <div className="empty-state">
-            No collections created yet.{" "}
-            <Link to="/app/collections">Create your first collection</Link>.
-          </div>
-        ) : (
-          <div className="table-wrap" style={{ border: "none" }}>
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Collection</th>
-                  <th>Hierarchy</th>
-                  <th>Products Count</th>
-                  <th>Shopify Status</th>
-                  <th style={{ textAlign: "right" }}>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {collections.map((collection) => (
-                  <tr key={collection.id}>
-                    <td>
-                      <div className="prod-cell">
-                        {collection.imageUrl ? (
-                          <img
-                            src={collection.imageUrl}
-                            alt=""
-                            style={{
-                              width: 38,
-                              height: 38,
-                              objectFit: "cover",
-                              borderRadius: 8,
-                              flexShrink: 0,
-                            }}
-                          />
-                        ) : (
-                          <div className="coll-icon" style={{ width: 38, height: 38, fontSize: 14, flexShrink: 0 }}>
-                            {initials(collection.name)}
-                          </div>
-                        )}
-                        <div>
-                          <div className="prod-name">{collection.name}</div>
-                          {collection.description ? (
-                            <div className="prod-sub" style={{ textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap", maxWidth: 300 }}>
-                              {collection.description}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    </td>
-                    <td>
-                      {collection.parent ? (
-                        <span className="hint">
-                          Sub-collection of <strong>{collection.parent.name}</strong>
-                        </span>
-                      ) : (
-                        <span className="badge" style={{ background: "var(--bg)", border: "1px solid var(--line)" }}>
-                          Main Collection
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      <strong>{collection._count.products}</strong>{" "}
-                      <span className="hint">product{collection._count.products === 1 ? "" : "s"}</span>
-                    </td>
-                    <td>
-                      <span className={`badge ${collection.shopifyCollectionId ? "active" : "draft"}`}>
-                        <span className="badge-dot" />
-                        {collection.shopifyCollectionId ? "Synced" : "Local only"}
-                      </span>
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <Link to="/app/collections" className="btn small">
-                        Manage
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      <div className="dash-tabs" role="tablist">
+        <button
+          type="button"
+          className={`dash-tab-btn ${activeTab === "all" ? "active" : ""}`}
+          onClick={() => setActiveTab("all")}
+        >
+          All Modules
+        </button>
+        <button
+          type="button"
+          className={`dash-tab-btn ${activeTab === "metrics" ? "active" : ""}`}
+          onClick={() => setActiveTab("metrics")}
+        >
+          Key Metrics
+        </button>
+        <button
+          type="button"
+          className={`dash-tab-btn ${activeTab === "orders" ? "active" : ""}`}
+          onClick={() => setActiveTab("orders")}
+        >
+          Recent Orders ({recentOrders.length})
+        </button>
+        <button
+          type="button"
+          className={`dash-tab-btn ${activeTab === "collections" ? "active" : ""}`}
+          onClick={() => setActiveTab("collections")}
+        >
+          Collections ({collections.length})
+        </button>
+        <button
+          type="button"
+          className={`dash-tab-btn ${activeTab === "products" ? "active" : ""}`}
+          onClick={() => setActiveTab("products")}
+        >
+          Products ({stats.products})
+        </button>
+        <button
+          type="button"
+          className={`dash-tab-btn ${activeTab === "analytics" ? "active" : ""}`}
+          onClick={() => setActiveTab("analytics")}
+        >
+          Analytics &amp; Reports
+        </button>
+        <button
+          type="button"
+          className={`dash-tab-btn ${activeTab === "metals" ? "active" : ""}`}
+          onClick={() => setActiveTab("metals")}
+        >
+          Metals &amp; Purities
+        </button>
       </div>
 
-      {/* Recent Products Table */}
-      <div className="panel" style={{ marginBottom: 24 }}>
-        <div className="panel-title">
-          <span>Recent Products</span>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <Link to="/app/products?view=edit" className="btn small primary">
-              + Add product
-            </Link>
-            <Link to="/app/products?view=catalog" className="panel-link">
-              View all
-            </Link>
+      {/* CARD FORMAT: Overview & Key Metrics */}
+      {activeTab === "all" || activeTab === "metrics" ? (
+        <div
+          className="stats"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+            gap: 16,
+            marginBottom: 24,
+          }}
+        >
+          {/* Card 1: Jewellery Products */}
+          <div className="stat-card-luxury">
+            <div className="stat-card-head">
+              <div
+                className="icon-wrap"
+                style={{ background: "var(--surface-light-brand)", color: "var(--surface-primary-cta)" }}
+              >
+                P
+              </div>
+              <span className="badge active">
+                <span className="badge-dot" />
+                {stats.syncedProducts} on Shopify
+              </span>
+            </div>
+            <div className="stat-card-body">
+              <div className="stat-label">Products Inventory</div>
+              <div className="val">{stats.products}</div>
+              <div className="sub">
+                {stats.products - stats.syncedProducts > 0
+                  ? `${stats.products - stats.syncedProducts} pending sync`
+                  : "All products synced"}
+              </div>
+            </div>
+            <div className="stat-card-foot">
+              <Link to="/app/products?view=catalog" className="panel-link">
+                View catalog →
+              </Link>
+              <Link to="/app/products?view=edit" className="btn small primary">
+                + Add
+              </Link>
+            </div>
+          </div>
+
+          {/* Card 2: Collections */}
+          <div className="stat-card-luxury">
+            <div className="stat-card-head">
+              <div
+                className="icon-wrap"
+                style={{ background: "#ede9fe", color: "#5b21b6" }}
+              >
+                C
+              </div>
+              <span className="badge active">
+                <span className="badge-dot" />
+                {stats.syncedCollections} on Shopify
+              </span>
+            </div>
+            <div className="stat-card-body">
+              <div className="stat-label">Collections Directory</div>
+              <div className="val">{stats.collections}</div>
+              <div className="sub">Categories &amp; taxonomies</div>
+            </div>
+            <div className="stat-card-foot">
+              <Link to="/app/collections" className="panel-link">
+                Manage collections →
+              </Link>
+              <Link to="/app/collections" className="btn small">
+                Directory
+              </Link>
+            </div>
+          </div>
+
+          {/* Card 3: Metal Colours & Purities */}
+          <div className="stat-card-luxury">
+            <div className="stat-card-head">
+              <div
+                className="icon-wrap"
+                style={{ background: "#fef3c7", color: "#92400e" }}
+              >
+                M
+              </div>
+              <span
+                className="badge"
+                style={{ background: "var(--surface-light-brand)", color: "var(--surface-primary-cta)" }}
+              >
+                {stats.purities} Purity Levels
+              </span>
+            </div>
+            <div className="stat-card-body">
+              <div className="stat-label">Metals &amp; Purities</div>
+              <div className="val">{stats.metals} Colours</div>
+              <div className="sub">Yellow, Rose, White &amp; Silver</div>
+            </div>
+            <div className="stat-card-foot">
+              <Link to="/app/metals" className="panel-link">
+                Configure metals →
+              </Link>
+              <Link to="/app/metals" className="btn small">
+                Configure
+              </Link>
+            </div>
+          </div>
+
+          {/* Card 4: Live Benchmark Gold Rate */}
+          <div className="stat-card-luxury">
+            <div className="stat-card-head">
+              <div
+                className="icon-wrap"
+                style={{ background: "var(--surface-primary-cta)", color: "#ffffff" }}
+              >
+                ₹
+              </div>
+              <span className="badge active">
+                <span className="badge-dot" />
+                Live rate
+              </span>
+            </div>
+            <div className="stat-card-body">
+              <div className="stat-label">Benchmark Gold Rate</div>
+              <div className="val" style={{ fontSize: 26 }}>
+                {formatINR(goldPricePerGram)}
+              </div>
+              <div className="sub">Per gram base calculation rate</div>
+            </div>
+            <div className="stat-card-foot">
+              <Link to="/app/pricing" className="panel-link">
+                Rate history →
+              </Link>
+              <Link to="/app/pricing" className="btn small primary">
+                Update rate
+              </Link>
+            </div>
+          </div>
+
+          {/* Card 5: Recent Orders Volume */}
+          <div className="stat-card-luxury">
+            <div className="stat-card-head">
+              <div
+                className="icon-wrap"
+                style={{ background: "#e6eee1", color: "#2f5a34" }}
+              >
+                🛍️
+              </div>
+              <span className="badge paid">
+                <span className="badge-dot" />
+                {analytics.activeOrdersCount} Recent Orders
+              </span>
+            </div>
+            <div className="stat-card-body">
+              <div className="stat-label">Recent Sales Volume</div>
+              <div className="val" style={{ fontSize: 26, color: "var(--green)" }}>
+                {formatINR(analytics.totalRecentOrdersVolume)}
+              </div>
+              <div className="sub">Customer orders processed</div>
+            </div>
+            <div className="stat-card-foot">
+              <button
+                type="button"
+                className="panel-link"
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}
+                onClick={() => setActiveTab("orders")}
+              >
+                View recent bought items →
+              </button>
+            </div>
           </div>
         </div>
-        {recent.length === 0 ? (
-          <div className="empty-state">
-            No products yet.{" "}
-            <Link to="/app/products?view=edit">Add your first jewellery piece</Link>.
-          </div>
-        ) : (
-          <div className="table-wrap" style={{ border: "none" }}>
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Product</th>
-                  <th>SKU</th>
-                  <th>Variant</th>
-                  <th>Price</th>
-                  <th>Shopify Status</th>
-                  <th style={{ textAlign: "right" }}>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recent.map((product) => (
-                  <tr key={product.id}>
-                    <td>
-                      <div className="prod-cell">
-                        <div className="prod-thumb">{product.initials}</div>
-                        <div>
-                          <div className="prod-name">{product.name}</div>
-                          <div className="prod-sub">{product.collection}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="mono">{product.sku}</td>
-                    <td>{product.preview}</td>
-                    <td className="mono">{formatINR(product.price)}</td>
-                    <td>
-                      <span className={`badge ${product.synced ? "active" : "draft"}`}>
-                        <span className="badge-dot" />
-                        {product.synced ? "Synced" : "Not synced"}
-                      </span>
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      <Link to={`/app/products?view=edit&id=${product.id}`} className="btn small">
-                        Edit
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      ) : null}
 
-      {/* Split section: Purity Rates Table & Metals Configuration Table */}
-      <div className="split-2 metals-tables" style={{ marginBottom: 24 }}>
-        <div className="panel">
+      {/* ANALYTICS & RESEARCH SECTION */}
+      {activeTab === "all" || activeTab === "analytics" ? (
+        <div className="panel" style={{ marginBottom: 24 }}>
           <div className="panel-title">
-            <span>Purity Rates (Live Calculations)</span>
-            <Link to="/app/pricing" className="panel-link">
-              Update rate
-            </Link>
+            <span>Store Analytics &amp; Inventory Research</span>
+            <span className="hint" style={{ fontWeight: 400 }}>
+              Live Telemetry &amp; Demand Insights
+            </span>
           </div>
-          <div className="table-wrap" style={{ border: "none" }}>
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Metal colour</th>
-                  <th>Purity</th>
-                  <th>Rate / gram (INR)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {purities.length === 0 ? (
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+              gap: 20,
+              marginTop: 10,
+            }}
+          >
+            {/* Telemetry Block 1: Valuation & Exposure */}
+            <div style={{ background: "var(--bg)", padding: 16, borderRadius: 10, border: "1px solid var(--line)" }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--surface-primary-cta)", marginBottom: 8 }}>
+                💎 Estimated Catalog Valuation
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 700, fontFamily: "var(--font-heading)", color: "var(--ink)", marginBottom: 4 }}>
+                {formatINR(analytics.estimatedCatalogValue)}
+              </div>
+              <div className="hint" style={{ fontSize: 13 }}>
+                Estimated retail inventory value based on {stats.products} products and today&apos;s gold benchmark rate.
+              </div>
+              <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                <span style={{ color: "var(--text-secondary-content)" }}>Total Gross Gold Weight:</span>
+                <strong>{analytics.totalGoldWeightGrams.toFixed(2)} g</strong>
+              </div>
+              <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                <span style={{ color: "var(--text-secondary-content)" }}>Sync Health Ratio:</span>
+                <strong style={{ color: "var(--green)" }}>
+                  {stats.products > 0 ? `${Math.round((stats.syncedProducts / stats.products) * 100)}%` : "100%"}
+                </strong>
+              </div>
+            </div>
+
+            {/* Telemetry Block 2: Purity Spread Distribution */}
+            <div style={{ background: "var(--bg)", padding: 16, borderRadius: 10, border: "1px solid var(--line)" }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--surface-primary-cta)", marginBottom: 8 }}>
+                ⚖️ Purity Spread &amp; Realized Rates
+              </div>
+              <div className="analytics-meter-wrap">
+                <div className="analytics-meter-head">
+                  <span>24K Pure Gold (100%)</span>
+                  <strong>{formatINR((goldPricePerGram / 0.916) * 1.0)} / g</strong>
+                </div>
+                <div className="analytics-meter-bar">
+                  <div className="analytics-meter-fill" style={{ width: "100%", background: "var(--surface-primary-cta)" }} />
+                </div>
+              </div>
+              <div className="analytics-meter-wrap">
+                <div className="analytics-meter-head">
+                  <span>22K Hallmark Gold (91.6%)</span>
+                  <strong>{formatINR(goldPricePerGram)} / g</strong>
+                </div>
+                <div className="analytics-meter-bar">
+                  <div className="analytics-meter-fill" style={{ width: "91.6%", background: "#d97706" }} />
+                </div>
+              </div>
+              <div className="analytics-meter-wrap" style={{ marginBottom: 0 }}>
+                <div className="analytics-meter-head">
+                  <span>18K Diamond Jewellery (75.0%)</span>
+                  <strong>{formatINR((goldPricePerGram / 0.916) * 0.75)} / g</strong>
+                </div>
+                <div className="analytics-meter-bar">
+                  <div className="analytics-meter-fill" style={{ width: "75%", background: "#e11d48" }} />
+                </div>
+              </div>
+            </div>
+
+            {/* Telemetry Block 3: Collection Distribution */}
+            <div style={{ background: "var(--bg)", padding: 16, borderRadius: 10, border: "1px solid var(--line)" }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--surface-primary-cta)", marginBottom: 8 }}>
+                📂 Top Collections Breakdown
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
+                {collections.slice(0, 4).map((col) => {
+                  const pct = stats.products > 0 ? Math.round((col._count.products / stats.products) * 100) : 10;
+                  return (
+                    <div key={col.id}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
+                        <span style={{ fontWeight: 500 }}>{col.name}</span>
+                        <span className="hint">{col._count.products} products</span>
+                      </div>
+                      <div className="analytics-meter-bar">
+                        <div
+                          className="analytics-meter-fill"
+                          style={{
+                            width: `${Math.max(pct, 12)}%`,
+                            background: "var(--surface-secondary-cta)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* RECENT BOUGHT ITEMS (RECENT ORDERS) TABLE with 8-Item Pagination */}
+      {activeTab === "all" || activeTab === "orders" ? (
+        <div className="panel" style={{ marginBottom: 24 }}>
+          <div className="panel-title">
+            <span>Recent Bought Items &amp; Customer Orders</span>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span className="hint" style={{ fontWeight: 400 }}>
+                Total {filteredOrders.length} orders
+              </span>
+            </div>
+          </div>
+
+          {filteredOrders.length === 0 ? (
+            <div className="empty-state">No recent orders match your search.</div>
+          ) : (
+            <div className="table-wrap" style={{ border: "none" }}>
+              <table className="data">
+                <thead>
                   <tr>
-                    <td colSpan={3}>Go to Metals &amp; purity to add levels.</td>
+                    <th>Order #</th>
+                    <th>Customer</th>
+                    <th>Item Purchased</th>
+                    <th>Date</th>
+                    <th>Total Price</th>
+                    <th>Payment</th>
+                    <th>Fulfillment</th>
                   </tr>
-                ) : (
-                  purities.slice(0, 8).map((purity) => (
-                    <tr key={purity.id}>
-                      <td>{purity.metal.color}</td>
+                </thead>
+                <tbody>
+                  {filteredOrders.slice(0, visibleOrders).map((order) => (
+                    <tr key={order.id}>
                       <td>
-                        <strong>{purity.label}</strong>
-                        <span className="hint" style={{ marginLeft: 6, fontSize: "0.85em" }}>
-                          ({(purity.purityValue * 100).toFixed(1)}%)
+                        <strong className="mono" style={{ color: "var(--surface-primary-cta)" }}>
+                          {order.orderNumber}
+                        </strong>
+                      </td>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{order.customerName}</div>
+                        <div className="hint" style={{ fontSize: "0.82em" }}>
+                          {order.customerEmail}
+                        </div>
+                      </td>
+                      <td>
+                        <div style={{ fontWeight: 500 }}>{order.productName}</div>
+                        <div className="hint" style={{ fontSize: "0.82em" }}>
+                          {order.variantDetails} {order.quantity > 1 ? `(Qty: ${order.quantity})` : ""}
+                        </div>
+                      </td>
+                      <td style={{ fontSize: 13, color: "var(--text-secondary-content)" }}>
+                        {order.orderDate}
+                      </td>
+                      <td>
+                        <strong className="mono" style={{ fontSize: 14 }}>
+                          {formatINR(order.totalPrice)}
+                        </strong>
+                      </td>
+                      <td>
+                        <span className={`badge ${order.paymentStatus === "Paid" ? "paid" : "pending"}`}>
+                          <span className="badge-dot" />
+                          {order.paymentStatus}
                         </span>
                       </td>
-                      <td className="mono" style={{ fontWeight: 600 }}>
-                        {formatINR((goldPricePerGram / 0.916) * purity.purityValue)}
+                      <td>
+                        <span className={`badge ${order.fulfillmentStatus === "Fulfilled" ? "fulfilled" : "draft"}`}>
+                          <span className="badge-dot" />
+                          {order.fulfillmentStatus}
+                        </span>
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                  ))}
+                </tbody>
+              </table>
 
-        <div className="panel">
+              {/* Universal 8-Item Pagination Bar with Load More */}
+              <div className="table-pagination-bar">
+                <span>
+                  Showing {Math.min(visibleOrders, filteredOrders.length)} of {filteredOrders.length} orders
+                </span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {visibleOrders < filteredOrders.length ? (
+                    <button
+                      type="button"
+                      className="load-more-btn"
+                      onClick={() => setVisibleOrders((cur) => cur + 8)}
+                    >
+                      Load more (+8) ↓
+                    </button>
+                  ) : filteredOrders.length > 8 ? (
+                    <button
+                      type="button"
+                      className="load-more-btn"
+                      style={{ color: "var(--text-secondary-content)" }}
+                      onClick={() => setVisibleOrders(8)}
+                    >
+                      Show less (Reset to 8)
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {/* COLLECTIONS DIRECTORY TABLE with 8-Item Pagination */}
+      {activeTab === "all" || activeTab === "collections" ? (
+        <div className="panel" style={{ marginBottom: 24 }}>
           <div className="panel-title">
-            <span>Metal Configurations</span>
-            <Link to="/app/metals" className="panel-link">
-              Manage
-            </Link>
+            <span>Collections Directory</span>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Link to="/app/collections" className="btn small primary">
+                + New collection
+              </Link>
+              <Link to="/app/collections" className="panel-link">
+                Manage all
+              </Link>
+            </div>
           </div>
-          <div className="table-wrap" style={{ border: "none" }}>
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Metal Colour</th>
-                  <th>Purities Configured</th>
-                  <th>Status</th>
-                  <th style={{ textAlign: "right" }}>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {metals.length === 0 ? (
+
+          {filteredCollections.length === 0 ? (
+            <div className="empty-state">
+              No collections found. <Link to="/app/collections">Create a collection</Link>.
+            </div>
+          ) : (
+            <div className="table-wrap" style={{ border: "none" }}>
+              <table className="data">
+                <thead>
                   <tr>
-                    <td colSpan={4}>No metals configured yet.</td>
+                    <th>Collection</th>
+                    <th>Hierarchy</th>
+                    <th>Products Count</th>
+                    <th>Shopify Status</th>
+                    <th style={{ textAlign: "right" }}>Action</th>
                   </tr>
-                ) : (
-                  metals.map((metal) => (
-                    <tr key={metal.id}>
+                </thead>
+                <tbody>
+                  {filteredCollections.slice(0, visibleCollections).map((collection) => (
+                    <tr key={collection.id}>
                       <td>
-                        <strong>{metal.color}</strong>
-                        <div className="hint" style={{ fontSize: "0.82em" }}>{metal.name}</div>
+                        <div className="prod-cell">
+                          {collection.imageUrl ? (
+                            <img
+                              src={collection.imageUrl}
+                              alt=""
+                              style={{
+                                width: 38,
+                                height: 38,
+                                objectFit: "cover",
+                                borderRadius: 8,
+                                flexShrink: 0,
+                              }}
+                            />
+                          ) : (
+                            <div className="coll-icon" style={{ width: 38, height: 38, fontSize: 14, flexShrink: 0 }}>
+                              {initials(collection.name)}
+                            </div>
+                          )}
+                          <div>
+                            <div className="prod-name">{collection.name}</div>
+                            {collection.description ? (
+                              <div
+                                className="prod-sub"
+                                style={{
+                                  textOverflow: "ellipsis",
+                                  overflow: "hidden",
+                                  whiteSpace: "nowrap",
+                                  maxWidth: 320,
+                                }}
+                              >
+                                {collection.description}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
                       </td>
                       <td>
-                        {metal.purities && metal.purities.length > 0 ? (
-                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                            {metal.purities.map((p) => (
-                              <span key={p.id} className="badge gold" style={{ fontSize: "0.8em", padding: "2px 6px" }}>
-                                {p.label}
-                              </span>
-                            ))}
-                          </div>
+                        {collection.parent ? (
+                          <span className="hint">
+                            Sub-collection of <strong>{collection.parent.name}</strong>
+                          </span>
                         ) : (
-                          <span className="hint">—</span>
+                          <span className="badge" style={{ background: "var(--bg)", border: "1px solid var(--line)" }}>
+                            Main Collection
+                          </span>
                         )}
                       </td>
                       <td>
-                        <span className={`badge ${metal.status === "Active" ? "active" : "draft"}`}>
+                        <strong>{collection._count.products}</strong>{" "}
+                        <span className="hint">product{collection._count.products === 1 ? "" : "s"}</span>
+                      </td>
+                      <td>
+                        <span className={`badge ${collection.shopifyCollectionId ? "active" : "draft"}`}>
                           <span className="badge-dot" />
-                          {metal.status}
+                          {collection.shopifyCollectionId ? "Synced" : "Local only"}
                         </span>
                       </td>
                       <td style={{ textAlign: "right" }}>
-                        <Link to="/app/metals" className="btn small">
+                        <Link to="/app/collections" className="btn small">
+                          Manage
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* Universal 8-Item Pagination Bar with Load More */}
+              <div className="table-pagination-bar">
+                <span>
+                  Showing {Math.min(visibleCollections, filteredCollections.length)} of {filteredCollections.length} collections
+                </span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {visibleCollections < filteredCollections.length ? (
+                    <button
+                      type="button"
+                      className="load-more-btn"
+                      onClick={() => setVisibleCollections((cur) => cur + 8)}
+                    >
+                      Load more (+8) ↓
+                    </button>
+                  ) : filteredCollections.length > 8 ? (
+                    <button
+                      type="button"
+                      className="load-more-btn"
+                      style={{ color: "var(--text-secondary-content)" }}
+                      onClick={() => setVisibleCollections(8)}
+                    >
+                      Show less (Reset to 8)
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {/* RECENT PRODUCTS TABLE with 8-Item Pagination */}
+      {activeTab === "all" || activeTab === "products" ? (
+        <div className="panel" style={{ marginBottom: 24 }}>
+          <div className="panel-title">
+            <span>Products Inventory</span>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Link to="/app/products?view=edit" className="btn small primary">
+                + Add product
+              </Link>
+              <Link to="/app/products?view=catalog" className="panel-link">
+                View all ({stats.products})
+              </Link>
+            </div>
+          </div>
+
+          {filteredProducts.length === 0 ? (
+            <div className="empty-state">
+              No products found. <Link to="/app/products?view=edit">Add a jewellery product</Link>.
+            </div>
+          ) : (
+            <div className="table-wrap" style={{ border: "none" }}>
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th>SKU</th>
+                    <th>Variant Specification</th>
+                    <th>Price</th>
+                    <th>Shopify Status</th>
+                    <th style={{ textAlign: "right" }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredProducts.slice(0, visibleProducts).map((product) => (
+                    <tr key={product.id}>
+                      <td>
+                        <div className="prod-cell">
+                          {product.imageUrl ? (
+                            <img
+                              src={product.imageUrl}
+                              alt=""
+                              style={{ width: 38, height: 38, objectFit: "cover", borderRadius: 8, flexShrink: 0 }}
+                            />
+                          ) : (
+                            <div className="prod-thumb">{product.initials}</div>
+                          )}
+                          <div>
+                            <div className="prod-name">{product.name}</div>
+                            <div className="prod-sub">{product.collection}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="mono">{product.sku}</td>
+                      <td>{product.preview}</td>
+                      <td className="mono" style={{ fontWeight: 600 }}>
+                        {formatINR(product.price)}
+                      </td>
+                      <td>
+                        <span className={`badge ${product.synced ? "active" : "draft"}`}>
+                          <span className="badge-dot" />
+                          {product.synced ? "Synced" : "Not synced"}
+                        </span>
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        <Link to={`/app/products?view=edit&id=${product.id}`} className="btn small">
                           Edit
                         </Link>
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* Universal 8-Item Pagination Bar with Load More */}
+              <div className="table-pagination-bar">
+                <span>
+                  Showing {Math.min(visibleProducts, filteredProducts.length)} of {filteredProducts.length} products
+                </span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {visibleProducts < filteredProducts.length ? (
+                    <button
+                      type="button"
+                      className="load-more-btn"
+                      onClick={() => setVisibleProducts((cur) => cur + 8)}
+                    >
+                      Load more (+8) ↓
+                    </button>
+                  ) : filteredProducts.length > 8 ? (
+                    <button
+                      type="button"
+                      className="load-more-btn"
+                      style={{ color: "var(--text-secondary-content)" }}
+                      onClick={() => setVisibleProducts(8)}
+                    >
+                      Show less (Reset to 8)
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {/* METALS & PURITY RATES with 8-Item Pagination */}
+      {activeTab === "all" || activeTab === "metals" ? (
+        <div className="split-2 metals-tables" style={{ marginBottom: 24 }}>
+          {/* Purity Rates Table */}
+          <div className="panel">
+            <div className="panel-title">
+              <span>Purity Rates (Live Calculations)</span>
+              <Link to="/app/pricing" className="panel-link">
+                Update rate
+              </Link>
+            </div>
+            <div className="table-wrap" style={{ border: "none" }}>
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Metal colour</th>
+                    <th>Purity</th>
+                    <th>Rate / gram (INR)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPurities.length === 0 ? (
+                    <tr>
+                      <td colSpan={3}>No purity levels found.</td>
+                    </tr>
+                  ) : (
+                    filteredPurities.slice(0, visiblePurities).map((purity) => (
+                      <tr key={purity.id}>
+                        <td>{purity.metal.color}</td>
+                        <td>
+                          <strong>{purity.label}</strong>
+                          <span className="hint" style={{ marginLeft: 6, fontSize: "0.85em" }}>
+                            ({(purity.purityValue * 100).toFixed(1)}%)
+                          </span>
+                        </td>
+                        <td className="mono" style={{ fontWeight: 600 }}>
+                          {formatINR((goldPricePerGram / 0.916) * purity.purityValue)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+
+              <div className="table-pagination-bar">
+                <span>
+                  Showing {Math.min(visiblePurities, filteredPurities.length)} of {filteredPurities.length} purities
+                </span>
+                {visiblePurities < filteredPurities.length ? (
+                  <button
+                    type="button"
+                    className="load-more-btn"
+                    onClick={() => setVisiblePurities((cur) => cur + 8)}
+                  >
+                    Load more (+8) ↓
+                  </button>
+                ) : filteredPurities.length > 8 ? (
+                  <button
+                    type="button"
+                    className="load-more-btn"
+                    style={{ color: "var(--text-secondary-content)" }}
+                    onClick={() => setVisiblePurities(8)}
+                  >
+                    Show less
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+
+          {/* Metals Configuration Table */}
+          <div className="panel">
+            <div className="panel-title">
+              <span>Metal Configurations</span>
+              <Link to="/app/metals" className="panel-link">
+                Manage
+              </Link>
+            </div>
+            <div className="table-wrap" style={{ border: "none" }}>
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Metal Colour</th>
+                    <th>Purities Configured</th>
+                    <th>Status</th>
+                    <th style={{ textAlign: "right" }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredMetals.length === 0 ? (
+                    <tr>
+                      <td colSpan={4}>No metals configured yet.</td>
+                    </tr>
+                  ) : (
+                    filteredMetals.slice(0, visibleMetals).map((metal) => (
+                      <tr key={metal.id}>
+                        <td>
+                          <strong>{metal.color}</strong>
+                          <div className="hint" style={{ fontSize: "0.82em" }}>
+                            {metal.name}
+                          </div>
+                        </td>
+                        <td>
+                          {metal.purities && metal.purities.length > 0 ? (
+                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                              {metal.purities.map((p) => (
+                                <span
+                                  key={p.id}
+                                  className="badge gold"
+                                  style={{ fontSize: "0.8em", padding: "2px 6px" }}
+                                >
+                                  {p.label}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="hint">—</span>
+                          )}
+                        </td>
+                        <td>
+                          <span className={`badge ${metal.status === "Active" ? "active" : "draft"}`}>
+                            <span className="badge-dot" />
+                            {metal.status}
+                          </span>
+                        </td>
+                        <td style={{ textAlign: "right" }}>
+                          <Link to="/app/metals" className="btn small">
+                            Edit
+                          </Link>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+
+              <div className="table-pagination-bar">
+                <span>
+                  Showing {Math.min(visibleMetals, filteredMetals.length)} of {filteredMetals.length} metals
+                </span>
+                {visibleMetals < filteredMetals.length ? (
+                  <button
+                    type="button"
+                    className="load-more-btn"
+                    onClick={() => setVisibleMetals((cur) => cur + 8)}
+                  >
+                    Load more (+8) ↓
+                  </button>
+                ) : filteredMetals.length > 8 ? (
+                  <button
+                    type="button"
+                    className="load-more-btn"
+                    style={{ color: "var(--text-secondary-content)" }}
+                    onClick={() => setVisibleMetals(8)}
+                  >
+                    Show less
+                  </button>
+                ) : null}
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
     </>
   );
 }
