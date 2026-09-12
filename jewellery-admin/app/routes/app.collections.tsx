@@ -386,48 +386,6 @@ export default function CollectionsPage() {
         </div>
 
         <div>
-          <div className="coll-grid" style={{ marginBottom: 16 }}>
-            {collections.map((collection) => (
-              <button
-                key={collection.id}
-                type="button"
-                className="coll-card"
-                style={{
-                  textAlign: "left",
-                  cursor: "pointer",
-                  borderColor: editing?.id === collection.id ? "var(--gold)" : undefined,
-                }}
-                onClick={() => startEdit(collection)}
-              >
-                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                  {collection.imageUrl ? (
-                    <img
-                      src={collection.imageUrl}
-                      alt=""
-                      style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 4, flexShrink: 0 }}
-                    />
-                  ) : (
-                    <div className="coll-icon" style={{ flexShrink: 0 }}>{initials(collection.name)}</div>
-                  )}
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div className="coll-name" style={{ textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-                      {collection.name}
-                    </div>
-                    <div className="coll-count">
-                      {collection._count.products} product
-                      {collection._count.products === 1 ? "" : "s"}
-                      {" · "}
-                      {collection.parent ? `Sub of ${collection.parent.name}` : "Main Collection"}
-                    </div>
-                    <div className="hint" style={{ marginTop: 2 }}>
-                      {collection.shopifyCollectionId ? "On Shopify" : "Local only"}
-                    </div>
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
-
           <div className="table-wrap">
             <table className="data">
               <thead>
