@@ -30,7 +30,8 @@ export interface StoreOrderItem {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
+  const shop = session.shop;
 
   const [settings, collections, metals, purities, products, productCount] =
     await Promise.all([
@@ -103,181 +104,106 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   });
 
-  // Recent Bought Items / Customer Orders Telemetry
-  const recentOrders: StoreOrderItem[] = [
-    {
-      id: "ord-1088",
-      orderNumber: "#KJ-1088",
-      customerName: "Priya Sharma",
-      customerEmail: "priya.sharma@example.com",
-      productName: "22K Gold Traditional Floral Choker",
-      variantDetails: "Yellow Gold · 22K · 28.5g",
-      itemThumbnail: "",
-      quantity: 1,
-      totalPrice: 215450,
-      orderDate: "Today, 11:20 AM",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "Fulfilled",
-    },
-    {
-      id: "ord-1087",
-      orderNumber: "#KJ-1087",
-      customerName: "Rajesh Mehra",
-      customerEmail: "rajesh.m@corp.in",
-      productName: "18K Solitaire Diamond Pendant",
-      variantDetails: "White Gold · 18K · 0.75 ct VVS1",
-      itemThumbnail: "",
-      quantity: 1,
-      totalPrice: 142800,
-      orderDate: "Today, 09:45 AM",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "In transit",
-    },
-    {
-      id: "ord-1086",
-      orderNumber: "#KJ-1086",
-      customerName: "Ananya Deshmukh",
-      customerEmail: "ananya.d@gmail.com",
-      productName: "22K Temple Peacock Kada Bangles",
-      variantDetails: "Yellow Gold · 22K · 42.0g",
-      itemThumbnail: "",
-      quantity: 2,
-      totalPrice: 328600,
-      orderDate: "Yesterday",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "Fulfilled",
-    },
-    {
-      id: "ord-1085",
-      orderNumber: "#KJ-1085",
-      customerName: "Vikram Singhania",
-      customerEmail: "vikram@singhania.co",
-      productName: "24K Fine Gold Lakshmi Coin (10g)",
-      variantDetails: "Pure Gold · 24K · 10.0g",
-      itemThumbnail: "",
-      quantity: 5,
-      totalPrice: 385000,
-      orderDate: "Yesterday",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "Fulfilled",
-    },
-    {
-      id: "ord-1084",
-      orderNumber: "#KJ-1084",
-      customerName: "Kavita Reddy",
-      customerEmail: "kavita.reddy@yahoo.com",
-      productName: "18K Rose Gold Diamond Eternity Band",
-      variantDetails: "Rose Gold · 18K · 1.20 ct VS",
-      itemThumbnail: "",
-      quantity: 1,
-      totalPrice: 98500,
-      orderDate: "10 Sep 2026",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "Fulfilled",
-    },
-    {
-      id: "ord-1083",
-      orderNumber: "#KJ-1083",
-      customerName: "Arjun Nair",
-      customerEmail: "arjun.nair@tech.in",
-      productName: "22K Royal Antique Jhumkas",
-      variantDetails: "Antique Gold · 22K · 16.4g",
-      itemThumbnail: "",
-      quantity: 1,
-      totalPrice: 128900,
-      orderDate: "10 Sep 2026",
-      paymentStatus: "Pending",
-      fulfillmentStatus: "Unfulfilled",
-    },
-    {
-      id: "ord-1082",
-      orderNumber: "#KJ-1082",
-      customerName: "Meera Joshi",
-      customerEmail: "meera.j@gmail.com",
-      productName: "18K Two-Tone Solitaire Ring",
-      variantDetails: "Rose & White Gold · 18K",
-      itemThumbnail: "",
-      quantity: 1,
-      totalPrice: 76400,
-      orderDate: "09 Sep 2026",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "Fulfilled",
-    },
-    {
-      id: "ord-1081",
-      orderNumber: "#KJ-1081",
-      customerName: "Deepak Patel",
-      customerEmail: "d.patel@exports.in",
-      productName: "22K Mens Rudraksha Gold Chain",
-      variantDetails: "Yellow Gold · 22K · 24.0g",
-      itemThumbnail: "",
-      quantity: 1,
-      totalPrice: 184200,
-      orderDate: "09 Sep 2026",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "Fulfilled",
-    },
-    {
-      id: "ord-1080",
-      orderNumber: "#KJ-1080",
-      customerName: "Sunita Agarwal",
-      customerEmail: "sunita.ag@heritage.com",
-      productName: "22K Bridal Kundan Necklace Set",
-      variantDetails: "Yellow Gold · 22K · 64.2g",
-      itemThumbnail: "",
-      quantity: 1,
-      totalPrice: 485000,
-      orderDate: "08 Sep 2026",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "Fulfilled",
-    },
-    {
-      id: "ord-1079",
-      orderNumber: "#KJ-1079",
-      customerName: "Rohan Verma",
-      customerEmail: "rohan.v@outlook.com",
-      productName: "925 Sterling Silver Royal Kada",
-      variantDetails: "Silver · 925 · 45.0g",
-      itemThumbnail: "",
-      quantity: 2,
-      totalPrice: 18500,
-      orderDate: "08 Sep 2026",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "Fulfilled",
-    },
-    {
-      id: "ord-1078",
-      orderNumber: "#KJ-1078",
-      customerName: "Shreya Kapoor",
-      customerEmail: "shreya.kapoor@design.in",
-      productName: "18K Diamond Tennis Bracelet",
-      variantDetails: "White Gold · 18K · 3.50 ct SI-GH",
-      itemThumbnail: "",
-      quantity: 1,
-      totalPrice: 289000,
-      orderDate: "07 Sep 2026",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "Fulfilled",
-    },
-    {
-      id: "ord-1077",
-      orderNumber: "#KJ-1077",
-      customerName: "Nikhil Rao",
-      customerEmail: "nikhil.rao@consulting.com",
-      productName: "22K Classic Gold Mangalsutra",
-      variantDetails: "Yellow Gold · 22K · 12.8g",
-      itemThumbnail: "",
-      quantity: 1,
-      totalPrice: 104500,
-      orderDate: "07 Sep 2026",
-      paymentStatus: "Paid",
-      fulfillmentStatus: "Fulfilled",
-    },
-  ];
+  // Query Real-Time Orders directly from Shopify Admin GraphQL API
+  let realShopifyOrders: StoreOrderItem[] = [];
+  let isOrdersScopeMissing = false;
 
-  const totalRecentOrdersVolume = recentOrders.reduce((sum, ord) => sum + ord.totalPrice, 0);
+  try {
+    const ordersResponse = await admin.graphql(
+      `#graphql
+      query GetRecentOrders {
+        orders(first: 20, sortKey: CREATED_AT, reverse: true) {
+          edges {
+            node {
+              id
+              name
+              createdAt
+              displayFinancialStatus
+              displayFulfillmentStatus
+              totalPriceSet {
+                shopMoney {
+                  amount
+                  currencyCode
+                }
+              }
+              customer {
+                displayName
+                email
+              }
+              lineItems(first: 5) {
+                edges {
+                  node {
+                    title
+                    quantity
+                    variant {
+                      title
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }`
+    );
+
+    const json = await ordersResponse.json();
+    if (json.data?.orders?.edges) {
+      realShopifyOrders = json.data.orders.edges.map((edge: any) => {
+        const o = edge.node;
+        const line = o.lineItems?.edges?.[0]?.node;
+        const totalAmount = parseFloat(o.totalPriceSet?.shopMoney?.amount || "0");
+        const dateObj = new Date(o.createdAt);
+        const formattedDate = dateObj.toLocaleDateString("en-IN", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        });
+
+        return {
+          id: o.id,
+          orderNumber: o.name,
+          customerName: o.customer?.displayName || "Guest Customer",
+          customerEmail: o.customer?.email || "—",
+          productName: line?.title || "Jewellery Item",
+          variantDetails:
+            line?.variant?.title && line.variant.title !== "Default Title"
+              ? line.variant.title
+              : "Standard item",
+          itemThumbnail: "",
+          quantity: line?.quantity || 1,
+          totalPrice: totalAmount,
+          orderDate: formattedDate,
+          paymentStatus: (o.displayFinancialStatus === "PAID"
+            ? "Paid"
+            : o.displayFinancialStatus || "Pending") as any,
+          fulfillmentStatus: (o.displayFulfillmentStatus === "FULFILLED"
+            ? "Fulfilled"
+            : o.displayFulfillmentStatus || "Unfulfilled") as any,
+        };
+      });
+    } else if (json.errors) {
+      const msg = json.errors[0]?.message || "";
+      if (msg.includes("read_orders") || msg.includes("Access denied")) {
+        isOrdersScopeMissing = true;
+      }
+    }
+  } catch (err: any) {
+    const msg = String(err?.message || "");
+    if (msg.includes("read_orders") || msg.includes("Access denied")) {
+      isOrdersScopeMissing = true;
+    }
+  }
+
+  const totalRecentOrdersVolume = realShopifyOrders.reduce(
+    (sum, ord) => sum + ord.totalPrice,
+    0
+  );
 
   return {
+    shop,
     goldPricePerGram,
     stats: {
       products: productCount,
@@ -295,19 +221,32 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     metals,
     purities,
     recent: catalogProducts,
-    recentOrders,
+    recentOrders: realShopifyOrders,
+    isOrdersScopeMissing,
     analytics: {
-      estimatedCatalogValue: totalCatalogValue > 0 ? totalCatalogValue : productCount * 145000,
-      totalGoldWeightGrams: totalGrossGoldWeight > 0 ? totalGrossGoldWeight : productCount * 22.5,
+      estimatedCatalogValue:
+        totalCatalogValue > 0 ? totalCatalogValue : productCount * 145000,
+      totalGoldWeightGrams:
+        totalGrossGoldWeight > 0 ? totalGrossGoldWeight : productCount * 22.5,
       totalRecentOrdersVolume,
-      activeOrdersCount: recentOrders.length,
+      activeOrdersCount: realShopifyOrders.length,
     },
   };
 };
 
 export default function Dashboard() {
-  const { goldPricePerGram, stats, collections, metals, purities, recent, recentOrders, analytics } =
-    useLoaderData<typeof loader>();
+  const {
+    shop,
+    goldPricePerGram,
+    stats,
+    collections,
+    metals,
+    purities,
+    recent,
+    recentOrders,
+    isOrdersScopeMissing,
+    analytics,
+  } = useLoaderData<typeof loader>();
 
   // Dashboard Tab Filter State
   const [activeTab, setActiveTab] = useState<string>("all");
@@ -621,27 +560,41 @@ export default function Dashboard() {
               >
                 🛍️
               </div>
-              <span className="badge paid">
+              <span className={`badge ${recentOrders.length > 0 ? "paid" : "draft"}`}>
                 <span className="badge-dot" />
-                {analytics.activeOrdersCount} Recent Orders
+                {recentOrders.length > 0
+                  ? `${recentOrders.length} Live Orders`
+                  : "0 Live Orders"}
               </span>
             </div>
             <div className="stat-card-body">
-              <div className="stat-label">Recent Sales Volume</div>
-              <div className="val" style={{ fontSize: 26, color: "var(--green)" }}>
+              <div className="stat-label">Live Sales Volume</div>
+              <div className="val" style={{ fontSize: 26, color: recentOrders.length > 0 ? "var(--green)" : "inherit" }}>
                 {formatINR(analytics.totalRecentOrdersVolume)}
               </div>
-              <div className="sub">Customer orders processed</div>
+              <div className="sub">
+                {recentOrders.length > 0
+                  ? "Real-time Shopify orders synced"
+                  : "No real orders placed yet on Shopify"}
+              </div>
             </div>
             <div className="stat-card-foot">
-              <button
-                type="button"
+              <a
+                href={`https://${shop}/admin/orders`}
+                target="_blank"
+                rel="noreferrer"
                 className="panel-link"
-                style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}
-                onClick={() => setActiveTab("orders")}
               >
-                View recent bought items →
-              </button>
+                Shopify orders admin ↗
+              </a>
+              <a
+                href={`https://${shop}/admin/orders/new`}
+                target="_blank"
+                rel="noreferrer"
+                className="btn small"
+              >
+                + Draft order
+              </a>
             </div>
           </div>
         </div>
@@ -758,16 +711,115 @@ export default function Dashboard() {
       {activeTab === "all" || activeTab === "orders" ? (
         <div className="panel" style={{ marginBottom: 24 }}>
           <div className="panel-title">
-            <span>Recent Bought Items &amp; Customer Orders</span>
+            <span>Recent Orders (Shopify Real-Time)</span>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <span className="hint" style={{ fontWeight: 400 }}>
-                Total {filteredOrders.length} orders
+                {recentOrders.length} live orders on store
               </span>
+              <a
+                href={`https://${shop}/admin/orders`}
+                target="_blank"
+                rel="noreferrer"
+                className="panel-link"
+              >
+                Open in Shopify ↗
+              </a>
             </div>
           </div>
 
+          {isOrdersScopeMissing ? (
+            <div
+              style={{
+                marginBottom: 16,
+                background: "var(--surface-light-brand)",
+                border: "1px solid var(--gold)",
+                color: "var(--surface-primary-cta)",
+                padding: "12px 16px",
+                borderRadius: 8,
+                fontSize: 13,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 8,
+              }}
+            >
+              <div>
+                <strong>Shopify Orders API:</strong> Live order telemetry requires the <code>read_orders</code> access scope. We have updated your app configuration with this scope.
+              </div>
+              <a
+                href={`https://${shop}/admin/orders`}
+                target="_blank"
+                rel="noreferrer"
+                className="btn small"
+                style={{ flexShrink: 0 }}
+              >
+                View store orders in Shopify ↗
+              </a>
+            </div>
+          ) : null}
+
           {filteredOrders.length === 0 ? (
-            <div className="empty-state">No recent orders match your search.</div>
+            <div
+              className="empty-state"
+              style={{
+                padding: "48px 20px",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: "50%",
+                  background: "var(--surface-primary-bg)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 26,
+                  marginBottom: 14,
+                  border: "1px solid var(--line)",
+                }}
+              >
+                🛍️
+              </div>
+              <div style={{ fontSize: 17, fontWeight: 600, color: "var(--ink)", marginBottom: 6 }}>
+                No real orders placed yet in your Shopify store
+              </div>
+              <p
+                style={{
+                  maxWidth: 520,
+                  fontSize: 14,
+                  color: "var(--text-secondary-content)",
+                  lineHeight: 1.5,
+                  margin: "0 0 18px",
+                }}
+              >
+                This table streams live order data directly from your connected Shopify store (<code>{shop}</code>). As shown in your Shopify admin, no customer orders or draft orders have been placed yet.
+              </p>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
+                <a
+                  href={`https://${shop}/admin/orders/new`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn primary"
+                >
+                  + Create order in Shopify ↗
+                </a>
+                <a
+                  href={`https://${shop}/admin/orders`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn"
+                >
+                  View Shopify orders page ↗
+                </a>
+              </div>
+            </div>
           ) : (
             <div className="table-wrap" style={{ border: "none" }}>
               <table className="data">
