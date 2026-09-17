@@ -927,6 +927,7 @@ export default function ProductsPage() {
   const [collectionSelectVal, setCollectionSelectVal] = useState("");
   const [enableVariants, setEnableVariants] = useState(false);
   const [dragImageKey, setDragImageKey] = useState<string | null>(null);
+  const [viewingProductId, setViewingProductId] = useState<string | null>(null);
   const hydratedEditIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -1132,6 +1133,11 @@ export default function ProductsPage() {
         p.collection.toLowerCase().includes(q),
     );
   }, [catalog, search]);
+
+  const viewingProduct = useMemo(
+    () => catalog.find((p) => p.id === viewingProductId) ?? null,
+    [catalog, viewingProductId],
+  );
 
   const allCollectionsEntry = useMemo(
     () => collections.find((c) => c.name === ALL_COLLECTIONS_NAME) ?? null,
@@ -2513,8 +2519,7 @@ export default function ProductsPage() {
                 </button>
               ) : null}
               <div className="hint" style={{ marginTop: 10 }}>
-                After saving, use <strong>Sync all to Shopify</strong> in the sidebar to push
-                catalog changes.
+                Saving automatically pushes this product to Shopify (title, description, images, price, collections).
               </div>
             </div>
           </div>
@@ -2590,7 +2595,20 @@ export default function ProductsPage() {
                 </thead>
                 <tbody>
                   {filteredCatalog.map((product) => (
-                    <tr key={product.id}>
+                    <tr
+                      key={product.id}
+                      className="clickable-row"
+                      onClick={() => setViewingProductId(product.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setViewingProductId(product.id);
+                        }
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`View ${product.name}`}
+                    >
                       <td>
                         <div className="prod-cell">
                           {product.imageUrl ? (
@@ -2638,7 +2656,11 @@ export default function ProductsPage() {
                         </span>
                       </td>
                       <td>
-                        <div className="row-actions" style={{ justifyContent: "flex-end" }}>
+                        <div
+                          className="row-actions"
+                          style={{ justifyContent: "flex-end" }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
                           <button
                             type="button"
                             className="btn small"
@@ -2661,6 +2683,142 @@ export default function ProductsPage() {
               </table>
             )}
           </div>
+
+          {viewingProduct ? (
+            <div
+              className="modal-backdrop"
+              role="presentation"
+              onClick={() => setViewingProductId(null)}
+            >
+              <div
+                className="modal-card"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="product-view-title"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="modal-head">
+                  <div>
+                    <h3 id="product-view-title" className="modal-title">
+                      {viewingProduct.name}
+                    </h3>
+                    <div className="hint" style={{ marginTop: 2 }}>
+                      SKU {viewingProduct.sku} · {viewingProduct.gender} ·{" "}
+                      {viewingProduct.status}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn small"
+                    onClick={() => setViewingProductId(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div className="modal-body">
+                  <div className="modal-media">
+                    {viewingProduct.images[0]?.url || viewingProduct.imageUrl ? (
+                      <img
+                        src={viewingProduct.images[0]?.url || viewingProduct.imageUrl}
+                        alt={viewingProduct.name}
+                      />
+                    ) : (
+                      <div className="prod-thumb" style={{ width: 96, height: 96, fontSize: 28 }}>
+                        {viewingProduct.initials}
+                      </div>
+                    )}
+                    {viewingProduct.images.length > 1 ? (
+                      <div className="modal-thumbs">
+                        {viewingProduct.images.map((image) => (
+                          <img key={image.url} src={image.url} alt="" />
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="modal-details">
+                    <div className="summary-row">
+                      <span className="l">Collections</span>
+                      <span className="v">{viewingProduct.collection}</span>
+                    </div>
+                    <div className="summary-row">
+                      <span className="l">From price</span>
+                      <span className="v">{formatINR(viewingProduct.fromPrice)}</span>
+                    </div>
+                    <div className="summary-row">
+                      <span className="l">Shopify</span>
+                      <span className="v">
+                        {viewingProduct.synced ? "Synced" : "Not synced"}
+                      </span>
+                    </div>
+                    <div className="summary-row" style={{ alignItems: "flex-start" }}>
+                      <span className="l">Description</span>
+                      <span className="v" style={{ textAlign: "left", maxWidth: 320 }}>
+                        {viewingProduct.description || "—"}
+                      </span>
+                    </div>
+
+                    <div className="panel-title" style={{ marginTop: 16, marginBottom: 8 }}>
+                      Variants ({viewingProduct.variants.length})
+                    </div>
+                    <div className="variant-list">
+                      {viewingProduct.variants.map((variant) => (
+                        <div key={variant.id} className="variant-chip">
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: 8,
+                              alignItems: "center",
+                            }}
+                          >
+                            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                              {variant.imageUrl ? (
+                                <img src={variant.imageUrl} alt="" className="upload-thumb" />
+                              ) : null}
+                              <div>
+                                <strong>{variant.label}</strong>
+                                <div className="hint">
+                                  Gross {formatGrams(variant.grossWeight)} · Wastage{" "}
+                                  {variant.wastagePercent}% · Making{" "}
+                                  {variant.makingChargeType === "percent"
+                                    ? `${variant.makingChargeValue}%`
+                                    : formatINR(variant.makingChargeValue)}
+                                </div>
+                              </div>
+                            </div>
+                            <span className="mono">{formatINR(variant.price)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="modal-foot">
+                  <button
+                    type="button"
+                    className="btn primary"
+                    onClick={() => {
+                      const id = viewingProduct.id;
+                      setViewingProductId(null);
+                      startEdit(id);
+                    }}
+                  >
+                    Edit product
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setViewingProductId(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </>
       )}
     </>

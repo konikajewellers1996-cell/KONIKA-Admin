@@ -261,7 +261,7 @@ export async function syncProductToShopify(
   // Check if existingProductId exists on Shopify
   let remoteProduct: {
     id: string;
-    mediaUrls: string[];
+    media: Array<{ id: string; url: string }>;
     variants?: {
       nodes: Array<{
         id: string;
@@ -279,6 +279,7 @@ export async function syncProductToShopify(
           id: string;
           media: {
             nodes: Array<{
+              id: string;
               preview?: { image?: { url?: string | null } | null } | null;
             }>;
           };
@@ -299,6 +300,7 @@ export async function syncProductToShopify(
             id
             media(first: 50) {
               nodes {
+                id
                 preview {
                   image {
                     url
@@ -321,10 +323,14 @@ export async function syncProductToShopify(
       );
       if (checkRes.product?.id) {
         remoteProduct = {
-          ...checkRes.product,
-          mediaUrls: (checkRes.product.media?.nodes || [])
-            .map((node) => node.preview?.image?.url || "")
-            .filter(Boolean),
+          id: checkRes.product.id,
+          variants: checkRes.product.variants,
+          media: (checkRes.product.media?.nodes || [])
+            .map((node) => ({
+              id: node.id,
+              url: node.preview?.image?.url || "",
+            }))
+            .filter((item) => item.id && item.url),
         };
       }
     } catch {
@@ -391,18 +397,8 @@ export async function syncProductToShopify(
     });
   }
 
-  // On update, only upload media Shopify does not already have
-  const remoteMediaKeys = new Set(
-    (remoteProduct?.mediaUrls || []).map((url) => normalizeImageUrl(url)),
-  );
-  const mediaItemsToCreate = remoteProduct
-    ? mediaItems.filter(
-        (item) => !remoteMediaKeys.has(normalizeImageUrl(item.originalSource)),
-      )
-    : mediaItems;
-
   if (shopifyProductId && remoteProduct) {
-    // 1. UPDATE EXISTING SHOPIFY PRODUCT (NON-DESTRUCTIVE)
+    // 1. UPDATE EXISTING SHOPIFY PRODUCT
     const updateRes = await gql<{
       productUpdate: {
         product: { id: string } | null;
@@ -411,33 +407,78 @@ export async function syncProductToShopify(
     }>(
       graphql,
       `#graphql
-      mutation productUpdate($input: ProductInput!) {
-        productUpdate(input: $input) {
+      mutation productUpdate($product: ProductUpdateInput!) {
+        productUpdate(product: $product) {
           product { id }
           userErrors { field message }
         }
       }`,
-      { input: { id: shopifyProductId, ...productPayload } },
+      { product: { id: shopifyProductId, ...productPayload } },
       "Product update",
     );
     assertNoUserErrors(updateRes.productUpdate.userErrors, "Product update");
 
-    if (mediaItemsToCreate.length) {
-      try {
-        await gql(
-          graphql,
-          `#graphql
-          mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
-            productCreateMedia(productId: $productId, media: $media) {
-              media { ... on MediaImage { id status } }
-              mediaUserErrors { field message }
-            }
-          }`,
-          { productId: shopifyProductId, media: mediaItemsToCreate },
-          "Product media",
-        );
-      } catch {
-        // best effort
+    // Reconcile media: keep one copy of each desired image, delete duplicates/extras, create missing
+    if (mediaItems.length) {
+      const desiredKeys = mediaItems.map((item) =>
+        normalizeImageUrl(item.originalSource),
+      );
+      const desiredKeySet = new Set(desiredKeys);
+      const keepIds = new Set<string>();
+      const matchedDesired = new Set<string>();
+
+      for (const media of remoteProduct.media) {
+        const key = normalizeImageUrl(media.url);
+        if (desiredKeySet.has(key) && !matchedDesired.has(key)) {
+          keepIds.add(media.id);
+          matchedDesired.add(key);
+        }
+      }
+
+      const deleteIds = remoteProduct.media
+        .filter((media) => !keepIds.has(media.id))
+        .map((media) => media.id);
+
+      if (deleteIds.length) {
+        try {
+          await gql(
+            graphql,
+            `#graphql
+            mutation productDeleteMedia($productId: ID!, $mediaIds: [ID!]!) {
+              productDeleteMedia(productId: $productId, mediaIds: $mediaIds) {
+                deletedMediaIds
+                mediaUserErrors { field message }
+              }
+            }`,
+            { productId: shopifyProductId, mediaIds: deleteIds },
+            "Product media delete",
+          );
+        } catch (err) {
+          console.error("[Shopify Sync] Failed to delete duplicate media:", err);
+        }
+      }
+
+      const mediaItemsToCreate = mediaItems.filter(
+        (item) => !matchedDesired.has(normalizeImageUrl(item.originalSource)),
+      );
+
+      if (mediaItemsToCreate.length) {
+        try {
+          await gql(
+            graphql,
+            `#graphql
+            mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+              productCreateMedia(productId: $productId, media: $media) {
+                media { ... on MediaImage { id status } }
+                mediaUserErrors { field message }
+              }
+            }`,
+            { productId: shopifyProductId, media: mediaItemsToCreate },
+            "Product media",
+          );
+        } catch (err) {
+          console.error("[Shopify Sync] Failed to create media:", err);
+        }
       }
     }
 

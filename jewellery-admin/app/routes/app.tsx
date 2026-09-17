@@ -161,7 +161,7 @@ export default function App() {
             <button type="button" className="btn primary" style={{ width: "100%" }} disabled={syncing} onClick={syncAll}>
               {syncing ? "Syncing…" : "Sync to Shopify"}
             </button>
-            Pushes saved catalog and prices to the store.
+            Bulk push all products &amp; collections. Single product saves sync automatically.
           </div>
         </aside>
 

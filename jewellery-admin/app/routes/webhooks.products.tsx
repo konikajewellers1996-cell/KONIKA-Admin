@@ -140,9 +140,39 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       sku: product?.sku || sku,
       name: payload.title || "Unnamed Product",
       description: htmlToPlainText(payload.body_html || product?.description || ""),
-      imageUrl: imageUrl || product?.imageUrl || "",
-      shopifyFileId: shopifyFileId || product?.shopifyFileId || null,
-      imagesJson: imagesList.length ? imagesJson : (product?.imagesJson || "[]"),
+      imageUrl: (imagesList[0]?.url || imageUrl || product?.imageUrl || ""),
+      shopifyFileId: (imagesList[0]?.shopifyFileId || shopifyFileId || product?.shopifyFileId || null),
+      // Prefer local gallery when we already manage images in the admin app,
+      // so Shopify duplicate media does not re-inflate the dashboard after sync.
+      imagesJson: (() => {
+        if (product?.imagesJson) {
+          try {
+            const local = JSON.parse(product.imagesJson) as Array<{
+              url?: string;
+              shopifyFileId?: string | null;
+            }>;
+            if (Array.isArray(local) && local.some((item) => item?.url)) {
+              const seen = new Set<string>();
+              const unique = local
+                .filter((item) => item?.url)
+                .map((item) => ({
+                  url: String(item.url),
+                  shopifyFileId: item.shopifyFileId ?? null,
+                }))
+                .filter((item) => {
+                  const key = normalizeImageUrl(item.url);
+                  if (!key || seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                });
+              if (unique.length) return JSON.stringify(unique);
+            }
+          } catch {
+            // fall through
+          }
+        }
+        return imagesList.length ? imagesJson : product?.imagesJson || "[]";
+      })(),
       gender,
       status: payload.status === "active" ? "Active" : "Draft",
     };

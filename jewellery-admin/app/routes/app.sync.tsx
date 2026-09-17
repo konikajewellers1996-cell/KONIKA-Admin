@@ -127,7 +127,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 const urls = Array.isArray(parsed)
                   ? parsed.map((item) => item?.url).filter((url): url is string => Boolean(url))
                   : [];
-                if (urls.length) return urls;
+                const seen = new Set<string>();
+                const unique = urls.filter((url) => {
+                  const key = url.split("?")[0].split("#")[0];
+                  if (!key || seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                });
+                if (unique.length) return unique;
               } catch {
                 // ignore
               }
