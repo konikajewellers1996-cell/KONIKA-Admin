@@ -1,6 +1,7 @@
 import prisma from "../db.server";
+import { ALL_COLLECTIONS_NAME } from "./collections";
 
-export const ALL_COLLECTIONS_NAME = "ALL Collections";
+export { ALL_COLLECTIONS_NAME };
 
 export async function ensureAllCollectionsCollection() {
   const existing = await prisma.collection.findFirst({

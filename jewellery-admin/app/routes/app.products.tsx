@@ -34,10 +34,8 @@ import {
   parseProductExcel,
   type ProductExportVariant,
 } from "../lib/product-excel";
-import {
-  ALL_COLLECTIONS_NAME,
-  ensureAllCollectionsCollection,
-} from "../lib/seed.server";
+import { ALL_COLLECTIONS_NAME } from "../lib/collections";
+import { ensureAllCollectionsCollection } from "../lib/seed.server";
 
 type VariantDraft = {
   key: string;
