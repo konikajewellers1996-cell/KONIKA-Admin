@@ -74,9 +74,29 @@ type ProductFormState = {
   name: string;
   description: string;
   gender: string;
+  dimensionWidth: string;
+  dimensionHeight: string;
+  availableSizes: string[];
   collectionIds: string[];
   status: string;
 };
+
+const RING_SIZE_OPTIONS = Array.from({ length: 26 }, (_, i) => String(i + 5));
+
+function parseAvailableSizes(value: string | null | undefined): string[] {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => String(item).trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function looksLikeRing(name: string, collections: Array<{ name: string }>) {
+  if (/ring/i.test(name)) return true;
+  return collections.some((item) => /ring/i.test(item.name));
+}
 
 function parseProductImages(
   imagesJson: string | null | undefined,
@@ -163,6 +183,9 @@ const emptyProductForm = (collectionIds: string[] = []): ProductFormState => ({
   name: "",
   description: "",
   gender: "Women",
+  dimensionWidth: "",
+  dimensionHeight: "",
+  availableSizes: [],
   collectionIds,
   status: "Active",
 });
@@ -268,6 +291,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         product.shopifyFileId,
       ),
       gender: product.gender,
+      dimensionWidth: product.dimensionWidth || "",
+      dimensionHeight: product.dimensionHeight || "",
+      availableSizes: parseAvailableSizes(product.availableSizes),
       collectionIds: product.collections.map((c) => c.id),
       collection: product.collections.map((c) => c.name).join(", ") || "—",
       status: product.status,
@@ -590,6 +616,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const name = String(form.get("name") || "").trim();
     const description = htmlToPlainText(String(form.get("description") || "").trim());
     const gender = String(form.get("gender") || "Unisex");
+    const dimensionWidth = String(form.get("dimensionWidth") || "").trim();
+    const dimensionHeight = String(form.get("dimensionHeight") || "").trim();
+    let availableSizes: string[] = [];
+    try {
+      const parsed = JSON.parse(String(form.get("availableSizes") || "[]"));
+      availableSizes = Array.isArray(parsed)
+        ? parsed.map((item) => String(item).trim()).filter(Boolean)
+        : [];
+    } catch {
+      availableSizes = [];
+    }
+    const availableSizesJson = JSON.stringify(availableSizes);
     const collectionIds = form.getAll("collectionIds").map(String);
     const status = String(form.get("status") || "Active");
     const variantsRaw = String(form.get("variantsJson") || "[]");
@@ -835,6 +873,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           shopifyFileId,
           imagesJson,
           gender,
+          dimensionWidth,
+          dimensionHeight,
+          availableSizes: availableSizesJson,
           status,
           collections: {
             set: mergedCollectionIds.map((id) => ({ id })),
@@ -851,6 +892,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           shopifyFileId,
           imagesJson,
           gender,
+          dimensionWidth,
+          dimensionHeight,
+          availableSizes: availableSizesJson,
           status,
           variants: { create: variantCreateData },
           collections: {
@@ -1213,6 +1257,9 @@ export default function ProductsPage() {
       name: product.name,
       description: htmlToPlainText(product.description),
       gender: product.gender,
+      dimensionWidth: product.dimensionWidth || "",
+      dimensionHeight: product.dimensionHeight || "",
+      availableSizes: product.availableSizes || [],
       collectionIds: product.collectionIds,
       status: product.status,
     });
@@ -1664,6 +1711,72 @@ export default function ProductsPage() {
                     }
                     placeholder="Short product description"
                   />
+                </div>
+                <div className="field-row">
+                  <div className="field">
+                    <label>Width (optional)</label>
+                    <input
+                      name="dimensionWidth"
+                      value={productForm.dimensionWidth}
+                      onChange={(e) =>
+                        setProductForm((c) => ({ ...c, dimensionWidth: e.target.value }))
+                      }
+                      placeholder="e.g. 12 mm"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Height (optional)</label>
+                    <input
+                      name="dimensionHeight"
+                      value={productForm.dimensionHeight}
+                      onChange={(e) =>
+                        setProductForm((c) => ({ ...c, dimensionHeight: e.target.value }))
+                      }
+                      placeholder="e.g. 18 mm"
+                    />
+                  </div>
+                </div>
+                <input type="hidden" name="availableSizes" value={JSON.stringify(productForm.availableSizes)} />
+                <div className="field">
+                  <label>
+                    {looksLikeRing(productForm.name, selectedCollections)
+                      ? "Available ring sizes"
+                      : "Available sizes (optional)"}
+                  </label>
+                  <div className="hint" style={{ marginBottom: 8 }}>
+                    {looksLikeRing(productForm.name, selectedCollections)
+                      ? "This looks like a ring. Select the sizes customers can choose on the product page."
+                      : "Use this for rings or sized jewellery. Leave empty if size is not needed."}
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {RING_SIZE_OPTIONS.map((size) => {
+                      const selected = productForm.availableSizes.includes(size);
+                      return (
+                        <button
+                          key={size}
+                          type="button"
+                          className={`btn small${selected ? " primary" : ""}`}
+                          onClick={() =>
+                            setProductForm((current) => ({
+                              ...current,
+                              availableSizes: selected
+                                ? current.availableSizes.filter((item) => item !== size)
+                                : [...current.availableSizes, size].sort(
+                                    (a, b) => Number(a) - Number(b),
+                                  ),
+                            }))
+                          }
+                        >
+                          {size}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {productForm.availableSizes.length ? (
+                    <div className="hint" style={{ marginTop: 8 }}>
+                      Selected: {productForm.availableSizes.join(", ")}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="field">
@@ -2756,6 +2869,22 @@ export default function ProductsPage() {
                       <span className="l">Description</span>
                       <span className="v" style={{ textAlign: "left", maxWidth: 320 }}>
                         {viewingProduct.description || "—"}
+                      </span>
+                    </div>
+                    <div className="summary-row">
+                      <span className="l">Width</span>
+                      <span className="v">{viewingProduct.dimensionWidth || "—"}</span>
+                    </div>
+                    <div className="summary-row">
+                      <span className="l">Height</span>
+                      <span className="v">{viewingProduct.dimensionHeight || "—"}</span>
+                    </div>
+                    <div className="summary-row">
+                      <span className="l">Sizes</span>
+                      <span className="v">
+                        {viewingProduct.availableSizes?.length
+                          ? viewingProduct.availableSizes.join(", ")
+                          : "—"}
                       </span>
                     </div>
 

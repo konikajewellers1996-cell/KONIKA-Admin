@@ -194,6 +194,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             variantsForMeta,
             goldPricePerGram,
             variantIdMap,
+            {
+              width: product.dimensionWidth,
+              height: product.dimensionHeight,
+              sizes: (() => {
+                try {
+                  const parsed = JSON.parse(product.availableSizes || "[]");
+                  return Array.isArray(parsed) ? parsed.map(String) : [];
+                } catch {
+                  return [];
+                }
+              })(),
+            },
           );
         } catch (metaErr) {
           errors.push(

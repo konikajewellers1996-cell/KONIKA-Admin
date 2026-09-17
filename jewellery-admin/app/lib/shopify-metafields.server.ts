@@ -216,6 +216,9 @@ async function ensureStorefrontMetafieldDefinitions(graphql: GraphqlClient) {
     { name: "Metal Net Weight", namespace: "custom", key: "metal_netweight", type: "single_line_text_field", ownerType: "PRODUCT" },
     { name: "Diamond Total Weight", namespace: "custom", key: "diamond_total_weight", type: "single_line_text_field", ownerType: "PRODUCT" },
     { name: "Total Stone Count", namespace: "custom", key: "total_stone_count", type: "single_line_text_field", ownerType: "PRODUCT" },
+    { name: "Dimension Width", namespace: "custom", key: "dimension_width", type: "single_line_text_field", ownerType: "PRODUCT" },
+    { name: "Dimension Height", namespace: "custom", key: "dimension_height", type: "single_line_text_field", ownerType: "PRODUCT" },
+    { name: "Available Sizes", namespace: "custom", key: "available_sizes", type: "json", ownerType: "PRODUCT" },
     { name: "Material Specs", namespace: "custom", key: "material_specs", type: "json", ownerType: "PRODUCTVARIANT" },
     { name: "Stone Specs", namespace: "custom", key: "stone_specs", type: "json", ownerType: "PRODUCTVARIANT" },
     { name: "Price Breakup", namespace: "custom", key: "price_breakup", type: "json", ownerType: "PRODUCTVARIANT" },
@@ -270,6 +273,11 @@ export async function syncProductJewelleryMetafields(
   variants: MetafieldVariantSource[],
   baseGoldPricePerGram: number,
   variantIdMap?: Record<string, string>,
+  extras?: {
+    width?: string;
+    height?: string;
+    sizes?: string[];
+  },
 ) {
   await ensureStorefrontMetafieldDefinitions(graphql);
   const active = variants.filter(
@@ -364,6 +372,40 @@ export async function syncProductJewelleryMetafields(
       key: "total_stone_count",
       type: "single_line_text_field",
       value: primaryBuilt.diamondCountLabel,
+    });
+  }
+
+  const width = String(extras?.width || "").trim();
+  const height = String(extras?.height || "").trim();
+  const sizes = (extras?.sizes || []).map((s) => String(s).trim()).filter(Boolean);
+
+  if (width) {
+    productMetafields.push({
+      ownerId: shopifyProductId,
+      namespace: "custom",
+      key: "dimension_width",
+      type: "single_line_text_field",
+      value: width,
+    });
+  }
+
+  if (height) {
+    productMetafields.push({
+      ownerId: shopifyProductId,
+      namespace: "custom",
+      key: "dimension_height",
+      type: "single_line_text_field",
+      value: height,
+    });
+  }
+
+  if (sizes.length) {
+    productMetafields.push({
+      ownerId: shopifyProductId,
+      namespace: "custom",
+      key: "available_sizes",
+      type: "json",
+      value: JSON.stringify(sizes),
     });
   }
 

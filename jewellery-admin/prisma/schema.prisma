@@ -82,6 +82,9 @@ model Product {
   shopifyFileId    String?
   imagesJson       String           @default("[]")
   gender           String           @default("Unisex")
+  dimensionWidth   String           @default("")
+  dimensionHeight  String           @default("")
+  availableSizes   String           @default("[]")
   shopifyProductId String?
   status           String           @default("Active")
   createdAt        DateTime         @default(now())

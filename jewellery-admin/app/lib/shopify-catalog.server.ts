@@ -68,6 +68,146 @@ function assertNoUserErrors(
   }
 }
 
+function optionIsColor(name: string) {
+  return /^(colour|color)$/i.test(name.trim());
+}
+
+function optionIsPurity(name: string) {
+  return /^purity$/i.test(name.trim());
+}
+
+function isStandaloneDefaultVariant(
+  variants: Array<{ title: string; selectedOptions: Array<{ name: string; value: string }> }>,
+) {
+  if (variants.length !== 1) return false;
+  const options = variants[0].selectedOptions || [];
+  if (!options.length) return true;
+  return options.some(
+    (o) =>
+      /^title$/i.test(o.name) && /^default title$/i.test(o.value),
+  );
+}
+
+async function ensureShopifyProductOptions(
+  graphql: GraphqlClient,
+  productId: string,
+  desired: Array<{ name: string; values: string[] }>,
+  remoteOptions: Array<{
+    id: string;
+    name: string;
+    optionValues: Array<{ id: string; name: string }>;
+  }>,
+) {
+  if (!desired.length) {
+    return { colorName: "Colour", purityName: "Purity" };
+  }
+
+  const existingColor = remoteOptions.find((o) => optionIsColor(o.name));
+  const existingPurity = remoteOptions.find((o) => optionIsPurity(o.name));
+  const colorName = existingColor?.name || "Colour";
+  const purityName = existingPurity?.name || "Purity";
+
+  const toCreate: Array<{ name: string; values: Array<{ name: string }> }> = [];
+  for (const option of desired) {
+    const isColor = optionIsColor(option.name);
+    const isPurity = optionIsPurity(option.name);
+    const existing = isColor ? existingColor : isPurity ? existingPurity : remoteOptions.find((o) => o.name === option.name);
+    if (!existing) {
+      toCreate.push({
+        name: isColor ? colorName : isPurity ? purityName : option.name,
+        values: option.values.map((name) => ({ name })),
+      });
+    }
+  }
+
+  if (toCreate.length) {
+    const data = await gql<{
+      productOptionsCreate: {
+        userErrors: Array<{ message: string; field?: string[] }>;
+      };
+    }>(
+      graphql,
+      `#graphql
+      mutation productOptionsCreate($productId: ID!, $options: [OptionCreateInput!]!, $variantStrategy: ProductOptionCreateVariantStrategy) {
+        productOptionsCreate(productId: $productId, options: $options, variantStrategy: $variantStrategy) {
+          userErrors { field message }
+        }
+      }`,
+      {
+        productId,
+        options: toCreate,
+        variantStrategy: "LEAVE_AS_IS",
+      },
+      "Product options create",
+    );
+    assertNoUserErrors(data.productOptionsCreate.userErrors, "Product options create");
+  }
+
+  const refreshed = await gql<{
+    product: {
+      options: Array<{
+        id: string;
+        name: string;
+        optionValues: Array<{ id: string; name: string }>;
+      }>;
+    } | null;
+  }>(
+    graphql,
+    `#graphql
+    query productOptions($id: ID!) {
+      product(id: $id) {
+        options {
+          id
+          name
+          optionValues { id name }
+        }
+      }
+    }`,
+    { id: productId },
+    "Product options",
+  );
+
+  const latest = refreshed.product?.options || [];
+  for (const option of desired) {
+    const isColor = optionIsColor(option.name);
+    const isPurity = optionIsPurity(option.name);
+    const remote = latest.find((o) =>
+      isColor ? optionIsColor(o.name) : isPurity ? optionIsPurity(o.name) : o.name === option.name,
+    );
+    if (!remote) continue;
+    const existingNames = new Set(remote.optionValues.map((v) => v.name));
+    const optionValuesToAdd = option.values
+      .filter((value) => !existingNames.has(value))
+      .map((name) => ({ name }));
+    if (!optionValuesToAdd.length) continue;
+
+    const updateRes = await gql<{
+      productOptionUpdate: {
+        userErrors: Array<{ message: string; field?: string[] }>;
+      };
+    }>(
+      graphql,
+      `#graphql
+      mutation productOptionUpdate($productId: ID!, $option: OptionUpdateInput!, $optionValuesToAdd: [OptionValueCreateInput!]) {
+        productOptionUpdate(productId: $productId, option: $option, optionValuesToAdd: $optionValuesToAdd) {
+          userErrors { field message }
+        }
+      }`,
+      {
+        productId,
+        option: { id: remote.id },
+        optionValuesToAdd,
+      },
+      "Product option values",
+    );
+    assertNoUserErrors(updateRes.productOptionUpdate.userErrors, "Product option values");
+  }
+
+  const resolvedColor = latest.find((o) => optionIsColor(o.name))?.name || colorName;
+  const resolvedPurity = latest.find((o) => optionIsPurity(o.name))?.name || purityName;
+  return { colorName: resolvedColor, purityName: resolvedPurity };
+}
+
 export async function syncCollectionToShopify(
   graphql: GraphqlClient,
   name: string,
@@ -263,6 +403,11 @@ export async function syncProductToShopify(
   let remoteProduct: {
     id: string;
     media: Array<{ id: string; url: string }>;
+    options: Array<{
+      id: string;
+      name: string;
+      optionValues: Array<{ id: string; name: string }>;
+    }>;
     variants?: {
       nodes: Array<{
         id: string;
@@ -278,6 +423,11 @@ export async function syncProductToShopify(
       const checkRes = await gql<{
         product: {
           id: string;
+          options: Array<{
+            id: string;
+            name: string;
+            optionValues: Array<{ id: string; name: string }>;
+          }>;
           media: {
             nodes: Array<{
               id: string;
@@ -299,6 +449,11 @@ export async function syncProductToShopify(
         query checkProduct($id: ID!) {
           product(id: $id) {
             id
+            options {
+              id
+              name
+              optionValues { id name }
+            }
             media(first: 50) {
               nodes {
                 id
@@ -325,6 +480,7 @@ export async function syncProductToShopify(
       if (checkRes.product?.id) {
         remoteProduct = {
           id: checkRes.product.id,
+          options: checkRes.product.options || [],
           variants: checkRes.product.variants,
           media: (checkRes.product.media?.nodes || [])
             .map((node) => ({
@@ -483,7 +639,24 @@ export async function syncProductToShopify(
       }
     }
 
+    let colorOptionName = "Colour";
+    let purityOptionName = "Purity";
+    if (productOptions.length) {
+      const resolved = await ensureShopifyProductOptions(
+        graphql,
+        shopifyProductId,
+        productOptions.map((option) => ({
+          name: option.name,
+          values: option.values.map((value) => value.name),
+        })),
+        remoteProduct.options || [],
+      );
+      colorOptionName = resolved.colorName;
+      purityOptionName = resolved.purityName;
+    }
+
     const remoteVariants = remoteProduct.variants?.nodes || [];
+    const standaloneDefault = isStandaloneDefaultVariant(remoteVariants);
 
     if (input.variants.length === 0) {
       if (remoteVariants.length > 0) {
@@ -526,8 +699,8 @@ export async function syncProductToShopify(
         if (!matched && productOptions.length > 0) {
           matched = remoteVariants.find((rv) => {
             if (matchedRemoteIds.has(rv.id)) return false;
-            const cVal = rv.selectedOptions?.find((o) => o.name === "Colour")?.value;
-            const pVal = rv.selectedOptions?.find((o) => o.name === "Purity")?.value;
+            const cVal = rv.selectedOptions?.find((o) => optionIsColor(o.name))?.value;
+            const pVal = rv.selectedOptions?.find((o) => optionIsPurity(o.name))?.value;
             if (colors.length > 0 && purities.length > 0) {
               return cVal === local.color && pVal === local.purityLabel;
             }
@@ -537,18 +710,26 @@ export async function syncProductToShopify(
           });
         }
 
+        if (
+          !matched &&
+          standaloneDefault &&
+          !matchedRemoteIds.has(remoteVariants[0].id)
+        ) {
+          matched = remoteVariants[0];
+        }
+
         if (!matched && remoteVariants.length === 1 && input.variants.length === 1) {
           matched = remoteVariants[0];
         }
 
         const optionValues: Array<{ optionName: string; name: string }> = [];
         if (colors.length > 0 && purities.length > 0) {
-          optionValues.push({ optionName: "Colour", name: local.color });
-          optionValues.push({ optionName: "Purity", name: local.purityLabel });
+          optionValues.push({ optionName: colorOptionName, name: local.color });
+          optionValues.push({ optionName: purityOptionName, name: local.purityLabel });
         } else if (colors.length > 0) {
-          optionValues.push({ optionName: "Colour", name: local.color });
+          optionValues.push({ optionName: colorOptionName, name: local.color });
         } else if (purities.length > 0) {
-          optionValues.push({ optionName: "Purity", name: local.purityLabel });
+          optionValues.push({ optionName: purityOptionName, name: local.purityLabel });
         }
 
         const invSku = `${input.sku}${local.skuSuffix ? `-${local.skuSuffix}` : ""}`.slice(0, 100);
@@ -634,8 +815,8 @@ export async function syncProductToShopify(
         for (const local of input.variants) {
           if (!variantIdMap[local.id]) {
             const found = newlyCreated.find((nc) => {
-              const cVal = nc.selectedOptions?.find((o) => o.name === "Colour")?.value;
-              const pVal = nc.selectedOptions?.find((o) => o.name === "Purity")?.value;
+              const cVal = nc.selectedOptions?.find((o) => optionIsColor(o.name))?.value;
+              const pVal = nc.selectedOptions?.find((o) => optionIsPurity(o.name))?.value;
               if (colors.length > 0 && purities.length > 0) {
                 return cVal === local.color && pVal === local.purityLabel;
               }
@@ -960,6 +1141,19 @@ export async function syncAllProductPricesToShopify(graphql: GraphqlClient, gold
           product.shopifyProductId,
           product.variants,
           goldPricePerGram,
+          undefined,
+          {
+            width: product.dimensionWidth,
+            height: product.dimensionHeight,
+            sizes: (() => {
+              try {
+                const parsed = JSON.parse(product.availableSizes || "[]");
+                return Array.isArray(parsed) ? parsed.map(String) : [];
+              } catch {
+                return [];
+              }
+            })(),
+          },
         );
       } catch (error: any) {
         console.error(`[Shopify Price Sync] Failed to update prices for product ${product.sku}: ${error.message}`);
@@ -1149,6 +1343,18 @@ export async function syncSingleProductToShopify(
       variantsForMeta,
       goldPricePerGram,
       variantIdMap,
+      {
+        width: product.dimensionWidth,
+        height: product.dimensionHeight,
+        sizes: (() => {
+          try {
+            const parsed = JSON.parse(product.availableSizes || "[]");
+            return Array.isArray(parsed) ? parsed.map(String) : [];
+          } catch {
+            return [];
+          }
+        })(),
+      },
     );
   } catch (err) {
     console.error("[Shopify Sync] Metafield sync failed:", err);
