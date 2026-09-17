@@ -1,11 +1,62 @@
 import prisma from "../db.server";
 
+export const ALL_COLLECTIONS_NAME = "ALL Collections";
+
+export async function ensureAllCollectionsCollection() {
+  const existing = await prisma.collection.findFirst({
+    where: {
+      OR: [
+        { name: ALL_COLLECTIONS_NAME },
+        { name: "ALL Collection" },
+        { name: "All Products" },
+        { name: "All Product" },
+      ],
+    },
+  });
+
+  const allCollection = existing
+    ? existing.name !== ALL_COLLECTIONS_NAME
+      ? await prisma.collection.update({
+          where: { id: existing.id },
+          data: { name: ALL_COLLECTIONS_NAME },
+        })
+      : existing
+    : await prisma.collection.create({
+        data: {
+          name: ALL_COLLECTIONS_NAME,
+          description: "Every product is automatically added to this collection.",
+        },
+      });
+
+  // Keep every product linked to ALL Collections
+  const missing = await prisma.product.findMany({
+    where: {
+      collections: { none: { id: allCollection.id } },
+    },
+    select: { id: true },
+  });
+  if (missing.length) {
+    await prisma.collection.update({
+      where: { id: allCollection.id },
+      data: {
+        products: {
+          connect: missing.map((p) => ({ id: p.id })),
+        },
+      },
+    });
+  }
+
+  return allCollection;
+}
+
 export async function ensureAppSeed() {
   await prisma.appSetting.upsert({
     where: { id: "default" },
     update: {},
     create: { id: "default", goldPricePerGram: 6500 },
   });
+
+  await ensureAllCollectionsCollection();
 
   const metalCount = await prisma.metalType.count();
   if (metalCount > 0) return;
@@ -34,7 +85,9 @@ export async function ensureAppSeed() {
 
   await prisma.purityLevel.createMany({ data: purityRows });
 
-  const existingCollections = await prisma.collection.count();
+  const existingCollections = await prisma.collection.count({
+    where: { name: { not: ALL_COLLECTIONS_NAME } },
+  });
   if (existingCollections === 0) {
     await prisma.collection.createMany({
       data: [

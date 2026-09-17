@@ -34,6 +34,10 @@ import {
   parseProductExcel,
   type ProductExportVariant,
 } from "../lib/product-excel";
+import {
+  ALL_COLLECTIONS_NAME,
+  ensureAllCollectionsCollection,
+} from "../lib/seed.server";
 
 type VariantDraft = {
   key: string;
@@ -506,6 +510,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           .map((namePart) => collectionByName.get(namePart.toLowerCase())?.id)
           .filter((id): id is string => Boolean(id));
 
+        const allCollections = await ensureAllCollectionsCollection();
+        const mergedIds = Array.from(new Set([...collectionIds, allCollections.id]));
+
         const createdProduct = await prisma.product.create({
           data: {
             sku,
@@ -514,9 +521,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             gender: first.gender || "Unisex",
             status: first.status === "Draft" ? "Draft" : "Active",
             variants: { create: variantCreateData },
-            collections: collectionIds.length
-              ? { connect: collectionIds.map((id) => ({ id })) }
-              : undefined,
+            collections: {
+              connect: mergedIds.map((id) => ({ id })),
+            },
           },
         });
 
@@ -561,6 +568,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!sku || !name) {
       return { ok: false, message: "SKU and product name are required." };
     }
+
+    const allCollections = await ensureAllCollectionsCollection();
+    const mergedCollectionIds = Array.from(
+      new Set([...collectionIds.filter(Boolean), allCollections.id]),
+    );
 
     let drafts: VariantDraft[] = [];
     try {
@@ -790,7 +802,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           gender,
           status,
           collections: {
-            set: collectionIds.map((id) => ({ id })),
+            set: mergedCollectionIds.map((id) => ({ id })),
           },
         },
       });
@@ -807,7 +819,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           status,
           variants: { create: variantCreateData },
           collections: {
-            connect: collectionIds.map((id) => ({ id })),
+            connect: mergedCollectionIds.map((id) => ({ id })),
           },
         },
       });
@@ -1081,11 +1093,31 @@ export default function ProductsPage() {
     );
   }, [catalog, search]);
 
+  const allCollectionsEntry = useMemo(
+    () => collections.find((c) => c.name === ALL_COLLECTIONS_NAME) ?? null,
+    [collections],
+  );
+
+  // New-product form: always pre-select ALL Collections
+  useEffect(() => {
+    if (editingId) return;
+    if (!allCollectionsEntry) return;
+    setSelectedCollections((prev) =>
+      prev.some((c) => c.id === allCollectionsEntry.id)
+        ? prev
+        : [{ id: allCollectionsEntry.id, name: allCollectionsEntry.name }, ...prev],
+    );
+  }, [allCollectionsEntry, editingId]);
+
   function resetForm() {
     setEditingId(null);
     setEditingVariantKey(null);
     setProductForm(emptyProductForm());
-    setSelectedCollections([]);
+    setSelectedCollections(
+      allCollectionsEntry
+        ? [{ id: allCollectionsEntry.id, name: allCollectionsEntry.name }]
+        : [],
+    );
     setCollectionSelectVal("");
     setProductImages([]);
     setVariants([]);
@@ -1134,10 +1166,21 @@ export default function ProductsPage() {
       collectionIds: product.collectionIds,
       status: product.status,
     });
-    const selectedColls = product.collectionIds.map((id) => {
-      const coll = collections.find((c) => c.id === id);
-      return { id, name: coll?.name ?? "Unknown" };
-    }).filter((c) => c.id);
+    const selectedColls = product.collectionIds
+      .map((id) => {
+        const coll = collections.find((c) => c.id === id);
+        return { id, name: coll?.name ?? "Unknown" };
+      })
+      .filter((c) => c.id);
+    if (
+      allCollectionsEntry &&
+      !selectedColls.some((c) => c.id === allCollectionsEntry.id)
+    ) {
+      selectedColls.unshift({
+        id: allCollectionsEntry.id,
+        name: allCollectionsEntry.name,
+      });
+    }
     setSelectedCollections(selectedColls);
     setCollectionSelectVal("");
     setProductImages(
@@ -1153,39 +1196,50 @@ export default function ProductsPage() {
     setDraftFile(null);
     if (productImageInputRef.current) productImageInputRef.current.value = "";
 
-    setVariants(
-      product.variants.map((variant) => ({
-        key: variant.id,
-        id: variant.id,
-        metalId: variant.metalId,
-        purityId: variant.purityId,
-        metalColor: variant.metalColor,
-        grossWeight: variant.grossWeight,
-        stoneIncluded: variant.stoneIncluded,
-        stoneType: variant.stoneType,
-        stoneWeight: variant.stoneWeight,
-        diamondCategory: variant.diamondCategory || "Round",
-        diamondQualityId: variant.diamondQualityId || "",
-        diamondCount: variant.diamondCount || 1,
-        pricePerCarat: variant.pricePerCarat || 0,
-        wastagePercent: variant.wastagePercent,
-        makingChargeType: variant.makingChargeType,
-        makingChargeValue: variant.makingChargeValue,
-        stoneRate: variant.stoneRate,
-        status: variant.status,
-        imagePreview: variant.imageUrl || "",
-        existingImageUrl: variant.imageUrl || "",
-        existingFileId: variant.shopifyFileId,
-      })),
-    );
-    setVariantForm(
-      emptyVariant(
-        product.variants[0]?.metalId || firstMetal?.id || "",
-        product.variants[0]?.purityId || firstPurity?.id || "",
-        product.variants[0]?.metalColor || firstMetal?.color || "",
-      ),
-    );
-    setDraftPreview("");
+    const mappedVariants = product.variants.map((variant) => ({
+      key: variant.id,
+      id: variant.id,
+      metalId: variant.metalId,
+      purityId: variant.purityId,
+      metalColor: variant.metalColor,
+      grossWeight: Number(variant.grossWeight) || 0,
+      stoneIncluded: Boolean(variant.stoneIncluded),
+      stoneType: variant.stoneType || "Diamond",
+      stoneWeight: Number(variant.stoneWeight) || 0,
+      diamondCategory: variant.diamondCategory || "Round",
+      diamondQualityId: variant.diamondQualityId || "",
+      diamondCount: Number(variant.diamondCount) || 1,
+      pricePerCarat: Number(variant.pricePerCarat) || 0,
+      wastagePercent: Number(variant.wastagePercent) || 0,
+      makingChargeType: variant.makingChargeType,
+      makingChargeValue: Number(variant.makingChargeValue) || 0,
+      stoneRate: Number(variant.stoneRate) || 0,
+      status: variant.status,
+      imagePreview: variant.imageUrl || "",
+      existingImageUrl: variant.imageUrl || "",
+      existingFileId: variant.shopifyFileId,
+    }));
+    setVariants(mappedVariants);
+
+    const firstVariant = mappedVariants[0];
+    if (firstVariant) {
+      setEditingVariantKey(firstVariant.key);
+      setVariantForm({
+        ...firstVariant,
+        imagePreview: firstVariant.imagePreview || firstVariant.existingImageUrl || "",
+      });
+      setDraftPreview(firstVariant.imagePreview || firstVariant.existingImageUrl || "");
+    } else {
+      setEditingVariantKey(null);
+      setVariantForm(
+        emptyVariant(
+          firstMetal?.id || "",
+          firstPurity?.id || "",
+          firstMetal?.color || "",
+        ),
+      );
+      setDraftPreview("");
+    }
     setSearchParams({ view: "edit" });
   };
 
@@ -1567,76 +1621,78 @@ export default function ProductsPage() {
 
                 <div className="field">
                   <label>Collections</label>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <select
-                      style={{ flex: 1 }}
-                      value={collectionSelectVal}
-                      onChange={(e) => setCollectionSelectVal(e.target.value)}
-                    >
-                      <option value="">Select a collection...</option>
-                      {collections
-                        .filter((c) => !selectedCollections.some((sc) => sc.id === c.id))
-                        .map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name} {c.parent ? `(Sub of ${c.parent.name})` : ""}
-                          </option>
-                        ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="btn"
-                      style={{ height: 42, padding: "0 16px" }}
-                      onClick={() => {
-                        if (!collectionSelectVal) return;
-                        const coll = collections.find((c) => c.id === collectionSelectVal);
-                        if (coll) {
-                          setSelectedCollections((prev) => [...prev, { id: coll.id, name: coll.name }]);
-                        }
-                        setCollectionSelectVal("");
-                      }}
-                    >
-                      + Add
-                    </button>
+                  <select
+                    value={collectionSelectVal}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setCollectionSelectVal("");
+                      if (!nextId) return;
+                      const coll = collections.find((c) => c.id === nextId);
+                      if (!coll) return;
+                      setSelectedCollections((prev) =>
+                        prev.some((sc) => sc.id === coll.id)
+                          ? prev
+                          : [...prev, { id: coll.id, name: coll.name }],
+                      );
+                    }}
+                  >
+                    <option value="">Select a collection to add…</option>
+                    {collections
+                      .filter((c) => !selectedCollections.some((sc) => sc.id === c.id))
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} {c.parent ? `(Sub of ${c.parent.name})` : ""}
+                        </option>
+                      ))}
+                  </select>
+                  <div className="hint">
+                    Selecting a collection adds it immediately. Every product is also kept in {ALL_COLLECTIONS_NAME}.
                   </div>
 
-                  {/* Render the chips list */}
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-                    {selectedCollections.map((coll) => (
-                      <div
-                        key={coll.id}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          padding: "6px 12px",
-                          borderRadius: 20,
-                          fontSize: "0.9em",
-                          backgroundColor: "#f0f0f0",
-                          border: "1px solid #ddd",
-                        }}
-                      >
-                        <span>{coll.name}</span>
-                        <button
-                          type="button"
+                    {selectedCollections.map((coll) => {
+                      const isAll = coll.name === ALL_COLLECTIONS_NAME;
+                      return (
+                        <div
+                          key={coll.id}
                           style={{
-                            border: "none",
-                            background: "transparent",
-                            cursor: "pointer",
-                            fontSize: "1.1em",
-                            padding: 0,
-                            lineHeight: 1,
-                            color: "#888",
-                          }}
-                          onClick={() => {
-                            setSelectedCollections((prev) => prev.filter((c) => c.id !== coll.id));
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: "6px 12px",
+                            borderRadius: 20,
+                            fontSize: "0.9em",
+                            backgroundColor: isAll ? "var(--gold-tint)" : "#f0f0f0",
+                            border: "1px solid #ddd",
                           }}
                         >
-                          &times;
-                        </button>
-                        {/* Hidden input to submit via standard form POST */}
-                        <input type="hidden" name="collectionIds" value={coll.id} />
-                      </div>
-                    ))}
+                          <span>{coll.name}</span>
+                          {!isAll ? (
+                            <button
+                              type="button"
+                              style={{
+                                border: "none",
+                                background: "transparent",
+                                cursor: "pointer",
+                                fontSize: "1.1em",
+                                padding: 0,
+                                lineHeight: 1,
+                                color: "#888",
+                              }}
+                              onClick={() => {
+                                setSelectedCollections((prev) =>
+                                  prev.filter((c) => c.id !== coll.id),
+                                );
+                              }}
+                              aria-label={`Remove ${coll.name}`}
+                            >
+                              &times;
+                            </button>
+                          ) : null}
+                          <input type="hidden" name="collectionIds" value={coll.id} />
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -1700,7 +1756,11 @@ export default function ProductsPage() {
                       type="number"
                       step="0.001"
                       min="0"
-                      value={variantForm.grossWeight || ""}
+                      value={
+                        Number.isFinite(variantForm.grossWeight)
+                          ? variantForm.grossWeight
+                          : ""
+                      }
                       onChange={(e) =>
                         setVariantForm((c) => ({
                           ...c,
@@ -1829,7 +1889,11 @@ export default function ProductsPage() {
                               step="0.001"
                               min="0"
                               placeholder="2.000"
-                              value={variantForm.stoneWeight || ""}
+                              value={
+                                Number.isFinite(variantForm.stoneWeight)
+                                  ? variantForm.stoneWeight
+                                  : ""
+                              }
                               onChange={(e) =>
                                 setVariantForm((c) => ({
                                   ...c,
@@ -1954,7 +2018,11 @@ export default function ProductsPage() {
                             type="number"
                             step="0.001"
                             min="0"
-                            value={variantForm.stoneWeight || ""}
+                            value={
+                              Number.isFinite(variantForm.stoneWeight)
+                                ? variantForm.stoneWeight
+                                : ""
+                            }
                             onChange={(e) =>
                               setVariantForm((c) => ({
                                 ...c,
@@ -1969,7 +2037,11 @@ export default function ProductsPage() {
                             type="number"
                             step="0.01"
                             min="0"
-                            value={variantForm.stoneRate || ""}
+                            value={
+                              Number.isFinite(variantForm.stoneRate)
+                                ? variantForm.stoneRate
+                                : ""
+                            }
                             onChange={(e) =>
                               setVariantForm((c) => ({
                                 ...c,

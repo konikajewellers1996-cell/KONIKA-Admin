@@ -3,6 +3,7 @@ import { Form, useActionData, useLoaderData, useNavigation } from "react-router"
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { formatINR } from "../lib/pricing";
+import { fetchLiveGoldRate, runGoldRateSync } from "../lib/gold-rate-cron.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -25,6 +26,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(form.get("intent") || "");
 
   try {
+    if (intent === "fetch-live-rate") {
+      const liveRate = await fetchLiveGoldRate();
+      if (!liveRate) {
+        return {
+          ok: false,
+          message: "Could not fetch a live gold rate right now. Try again in a moment, or enter the rate manually.",
+        };
+      }
+
+      await runGoldRateSync(liveRate);
+
+      return {
+        ok: true,
+        message: `Live gold rate fetched and saved at ${formatINR(liveRate)} / g. Updating product prices on Shopify in the background...`,
+        liveRate,
+      };
+    }
+
     if (intent === "save-rate") {
       const goldPricePerGram = Number(form.get("goldPricePerGram"));
       if (!Number.isFinite(goldPricePerGram) || goldPricePerGram <= 0) {
@@ -37,8 +56,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         create: { id: "default", goldPricePerGram },
       });
 
-      // Import and trigger background Shopify catalog price sync
-      const { runGoldRateSync } = await import("../lib/gold-rate-cron.server");
       runGoldRateSync(goldPricePerGram).catch((err) => {
         console.error("[Pricing Page] Error in manual background gold rate sync:", err);
       });
@@ -63,11 +80,18 @@ export default function PricingPage() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
+  const fetchingLive =
+    busy &&
+    navigation.formData?.get("intent") === "fetch-live-rate";
 
-  // Filter unique purities by label for clean display
   const uniquePurities = purities.filter(
-    (item, index, self) => self.findIndex((p) => p.label === item.label) === index
+    (item, index, self) => self.findIndex((p) => p.label === item.label) === index,
   );
+
+  const displayedRate =
+    actionData && "liveRate" in actionData && typeof actionData.liveRate === "number"
+      ? actionData.liveRate
+      : goldPricePerGram;
 
   return (
     <>
@@ -75,27 +99,30 @@ export default function PricingPage() {
         <div>
           <h2 className="page-title">Gold rates</h2>
           <p className="page-sub">
-            Set today&apos;s gold rate per gram. Saving updates product prices on Shopify in the background.
+            Set today&apos;s gold rate per gram. Use Fetch live rate to pull the current market value after any manual edits.
           </p>
         </div>
       </div>
 
       {actionData?.message ? (
-        <div className={`flash ${actionData.ok ? "ok" : "err"}`}>{actionData.message}</div>
+        <div className={`flash ${actionData.ok ? "ok" : "err"}`} role="status">
+          {actionData.message}
+        </div>
       ) : null}
 
       <div className="panel" style={{ maxWidth: 520 }}>
         <div className="panel-title">Current gold price / gram</div>
-        <p className="rate-hero">{formatINR(goldPricePerGram)}</p>
+        <p className="rate-hero">{formatINR(displayedRate)}</p>
         {updatedAt ? (
           <div style={{ fontSize: 12, color: "var(--text-gray-500)", marginBottom: 12 }}>
-            Last updated: {new Date(updatedAt).toLocaleString("en-IN", {
+            Last updated:{" "}
+            {new Date(updatedAt).toLocaleString("en-IN", {
               day: "numeric",
               month: "short",
               year: "numeric",
               hour: "numeric",
               minute: "2-digit",
-              hour12: true
+              hour12: true,
             })}
           </div>
         ) : null}
@@ -104,21 +131,60 @@ export default function PricingPage() {
         </div>
 
         {uniquePurities.length > 0 ? (
-          <div style={{ marginTop: 16, marginBottom: 20, background: "var(--bg-light-white)", border: "1px solid var(--border-color)", padding: 12, borderRadius: 6 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--surface-primary-cta)", marginBottom: 8 }}>Purity rates per gram (INR):</div>
+          <div
+            style={{
+              marginTop: 16,
+              marginBottom: 20,
+              background: "var(--bg-light-white)",
+              border: "1px solid var(--border-color)",
+              padding: 12,
+              borderRadius: 6,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--surface-primary-cta)",
+                marginBottom: 8,
+              }}
+            >
+              Purity rates per gram (INR):
+            </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {uniquePurities.map((purity) => {
-                const calculatedRate = (goldPricePerGram / 0.916) * purity.purityValue;
+                const calculatedRate = (displayedRate / 0.916) * purity.purityValue;
                 return (
-                  <div key={purity.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, borderBottom: "1px dashed var(--border-color)", paddingBottom: 4 }}>
+                  <div
+                    key={purity.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      fontSize: 12,
+                      borderBottom: "1px dashed var(--border-color)",
+                      paddingBottom: 4,
+                    }}
+                  >
                     <span style={{ color: "var(--text-gray-500)" }}>Gold ({purity.label})</span>
-                    <strong className="mono" style={{ color: "var(--surface-primary-cta)" }}>{formatINR(calculatedRate)}</strong>
+                    <strong className="mono" style={{ color: "var(--surface-primary-cta)" }}>
+                      {formatINR(calculatedRate)}
+                    </strong>
                   </div>
                 );
               })}
             </div>
           </div>
         ) : null}
+
+        <Form method="post" style={{ marginBottom: 16 }}>
+          <input type="hidden" name="intent" value="fetch-live-rate" />
+          <button className="btn secondary" type="submit" disabled={busy} style={{ width: "100%" }}>
+            {fetchingLive ? "Fetching live rate…" : "Fetch live rate"}
+          </button>
+          <div className="hint" style={{ marginTop: 8 }}>
+            Pulls the latest 22K gold rate from live sources and updates all product prices.
+          </div>
+        </Form>
 
         <Form method="post">
           <input type="hidden" name="intent" value="save-rate" />
@@ -130,7 +196,8 @@ export default function PricingPage() {
               type="number"
               step="0.01"
               min="1"
-              defaultValue={goldPricePerGram}
+              key={displayedRate}
+              defaultValue={displayedRate}
               required
             />
           </div>

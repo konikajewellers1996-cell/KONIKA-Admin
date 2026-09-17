@@ -86,9 +86,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const uniqueProducts = Array.from(seenSkus.values());
 
   // Process recent products with live pricing
-  let totalCatalogValue = 0;
-  let totalGrossGoldWeight = 0;
-
   const catalogProducts = uniqueProducts.map((product) => {
     const first = product.variants[0];
     const price = first
@@ -106,11 +103,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             : goldPricePerGram,
         }).total
       : 0;
-
-    if (first) {
-      totalCatalogValue += price;
-      totalGrossGoldWeight += first.grossWeight;
-    }
 
     return {
       id: product.id,
@@ -246,14 +238,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     recent: catalogProducts,
     recentOrders: realShopifyOrders,
     isOrdersScopeMissing,
-    analytics: {
-      estimatedCatalogValue:
-        totalCatalogValue > 0 ? totalCatalogValue : productCount * 145000,
-      totalGoldWeightGrams:
-        totalGrossGoldWeight > 0 ? totalGrossGoldWeight : productCount * 22.5,
-      totalRecentOrdersVolume,
-      activeOrdersCount: realShopifyOrders.length,
-    },
+    totalRecentOrdersVolume,
   };
 };
 
@@ -268,7 +253,7 @@ export default function Dashboard() {
     recent,
     recentOrders,
     isOrdersScopeMissing,
-    analytics,
+    totalRecentOrdersVolume,
   } = useLoaderData<typeof loader>();
 
   // Dashboard Tab Filter State
@@ -422,13 +407,6 @@ export default function Dashboard() {
           onClick={() => setActiveTab("products")}
         >
           Products ({stats.products})
-        </button>
-        <button
-          type="button"
-          className={`dash-tab-btn ${activeTab === "analytics" ? "active" : ""}`}
-          onClick={() => setActiveTab("analytics")}
-        >
-          Analytics &amp; Reports
         </button>
         <button
           type="button"
@@ -593,7 +571,7 @@ export default function Dashboard() {
             <div className="stat-card-body">
               <div className="stat-label">Live Sales Volume</div>
               <div className="val" style={{ fontSize: 26, color: recentOrders.length > 0 ? "var(--green)" : "inherit" }}>
-                {formatINR(analytics.totalRecentOrdersVolume)}
+                {formatINR(totalRecentOrdersVolume)}
               </div>
               <div className="sub">
                 {recentOrders.length > 0
@@ -623,112 +601,7 @@ export default function Dashboard() {
         </div>
       ) : null}
 
-      {/* ANALYTICS & RESEARCH SECTION */}
-      {activeTab === "all" || activeTab === "analytics" ? (
-        <div className="panel" style={{ marginBottom: 24 }}>
-          <div className="panel-title">
-            <span>Store Analytics &amp; Inventory Research</span>
-            <span className="hint" style={{ fontWeight: 400 }}>
-              Live Telemetry &amp; Demand Insights
-            </span>
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-              gap: 20,
-              marginTop: 10,
-            }}
-          >
-            {/* Telemetry Block 1: Valuation & Exposure */}
-            <div style={{ background: "var(--bg)", padding: 16, borderRadius: 10, border: "1px solid var(--line)" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--surface-primary-cta)", marginBottom: 8 }}>
-                💎 Estimated Catalog Valuation
-              </div>
-              <div style={{ fontSize: 24, fontWeight: 700, fontFamily: "var(--font-heading)", color: "var(--ink)", marginBottom: 4 }}>
-                {formatINR(analytics.estimatedCatalogValue)}
-              </div>
-              <div className="hint" style={{ fontSize: 13 }}>
-                Estimated retail inventory value based on {stats.products} products and today&apos;s gold benchmark rate.
-              </div>
-              <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                <span style={{ color: "var(--text-secondary-content)" }}>Total Gross Gold Weight:</span>
-                <strong>{analytics.totalGoldWeightGrams.toFixed(2)} g</strong>
-              </div>
-              <div style={{ marginTop: 6, display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                <span style={{ color: "var(--text-secondary-content)" }}>Sync Health Ratio:</span>
-                <strong style={{ color: "var(--green)" }}>
-                  {stats.products > 0 ? `${Math.round((stats.syncedProducts / stats.products) * 100)}%` : "100%"}
-                </strong>
-              </div>
-            </div>
-
-            {/* Telemetry Block 2: Purity Spread Distribution */}
-            <div style={{ background: "var(--bg)", padding: 16, borderRadius: 10, border: "1px solid var(--line)" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--surface-primary-cta)", marginBottom: 8 }}>
-                ⚖️ Purity Spread &amp; Realized Rates
-              </div>
-              <div className="analytics-meter-wrap">
-                <div className="analytics-meter-head">
-                  <span>24K Pure Gold (100%)</span>
-                  <strong>{formatINR((goldPricePerGram / 0.916) * 1.0)} / g</strong>
-                </div>
-                <div className="analytics-meter-bar">
-                  <div className="analytics-meter-fill" style={{ width: "100%", background: "var(--surface-primary-cta)" }} />
-                </div>
-              </div>
-              <div className="analytics-meter-wrap">
-                <div className="analytics-meter-head">
-                  <span>22K Hallmark Gold (91.6%)</span>
-                  <strong>{formatINR(goldPricePerGram)} / g</strong>
-                </div>
-                <div className="analytics-meter-bar">
-                  <div className="analytics-meter-fill" style={{ width: "91.6%", background: "#d97706" }} />
-                </div>
-              </div>
-              <div className="analytics-meter-wrap" style={{ marginBottom: 0 }}>
-                <div className="analytics-meter-head">
-                  <span>18K Diamond Jewellery (75.0%)</span>
-                  <strong>{formatINR((goldPricePerGram / 0.916) * 0.75)} / g</strong>
-                </div>
-                <div className="analytics-meter-bar">
-                  <div className="analytics-meter-fill" style={{ width: "75%", background: "#e11d48" }} />
-                </div>
-              </div>
-            </div>
-
-            {/* Telemetry Block 3: Collection Distribution */}
-            <div style={{ background: "var(--bg)", padding: 16, borderRadius: 10, border: "1px solid var(--line)" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--surface-primary-cta)", marginBottom: 8 }}>
-                📂 Top Collections Breakdown
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                {collections.slice(0, 4).map((col) => {
-                  const pct = stats.products > 0 ? Math.round((col._count.products / stats.products) * 100) : 10;
-                  return (
-                    <div key={col.id}>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
-                        <span style={{ fontWeight: 500 }}>{col.name}</span>
-                        <span className="hint">{col._count.products} products</span>
-                      </div>
-                      <div className="analytics-meter-bar">
-                        <div
-                          className="analytics-meter-fill"
-                          style={{
-                            width: `${Math.max(pct, 12)}%`,
-                            background: "var(--surface-secondary-cta)",
-                          }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {/* ANALYTICS SECTION REMOVED */}
 
       {/* RECENT BOUGHT ITEMS (RECENT ORDERS) TABLE with 8-Item Pagination */}
       {activeTab === "all" || activeTab === "orders" ? (
