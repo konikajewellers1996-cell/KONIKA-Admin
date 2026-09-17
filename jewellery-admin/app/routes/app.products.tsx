@@ -1852,46 +1852,6 @@ export default function ProductsPage() {
                       : "Colour × purity variants"
                     : "Product metal & pricing"}
                 </div>
-                <label
-                  className="field"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    marginBottom: 14,
-                    cursor: "pointer",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={enableVariants}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setEnableVariants(checked);
-                      if (!checked) {
-                        // Collapse to a single direct product from the current form / first variant
-                        setEditingVariantKey(null);
-                        if (variants[0]) {
-                          setVariantForm({
-                            ...variants[0],
-                            imagePreview:
-                              variants[0].imagePreview || variants[0].existingImageUrl || "",
-                          });
-                          setDraftPreview(
-                            variants[0].imagePreview || variants[0].existingImageUrl || "",
-                          );
-                        }
-                        setVariants((current) => (current[0] ? [current[0]] : []));
-                      }
-                    }}
-                  />
-                  <span>
-                    <strong>Enable colour × purity variants</strong>
-                    <div className="hint" style={{ marginTop: 2 }}>
-                      Unticked: save as a direct single product. Ticked: add multiple metal/purity variants.
-                    </div>
-                  </span>
-                </label>
                 {enableVariants && editingVariantKey ? (
                   <div className="hint" style={{ marginBottom: 12 }}>
                     Editing a listed variant — update fields, then click{" "}
@@ -2267,6 +2227,38 @@ export default function ProductsPage() {
                     />
                   </div>
                 </div>
+
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    className="check-input"
+                    checked={enableVariants}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setEnableVariants(checked);
+                      if (!checked) {
+                        setEditingVariantKey(null);
+                        if (variants[0]) {
+                          setVariantForm({
+                            ...variants[0],
+                            imagePreview:
+                              variants[0].imagePreview || variants[0].existingImageUrl || "",
+                          });
+                          setDraftPreview(
+                            variants[0].imagePreview || variants[0].existingImageUrl || "",
+                          );
+                        }
+                        setVariants((current) => (current[0] ? [current[0]] : []));
+                      }
+                    }}
+                  />
+                  <span className="check-copy">
+                    <span className="check-title">Enable colour × purity variants</span>
+                    <span className="check-hint">
+                      Off = single product · On = multiple metal/purity variants
+                    </span>
+                  </span>
+                </label>
 
                 {enableVariants ? (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
