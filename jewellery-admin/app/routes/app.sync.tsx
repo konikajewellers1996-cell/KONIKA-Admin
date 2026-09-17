@@ -10,6 +10,7 @@ import {
   syncCollectionToShopify,
   syncProductToShopify,
 } from "../lib/shopify-catalog.server";
+import { syncProductJewelleryMetafields } from "../lib/shopify-metafields.server";
 
 /**
  * Global sync: push every collection + product from this dashboard to Shopify.
@@ -44,7 +45,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const rawProducts = await prisma.product.findMany({
       include: {
-        variants: { include: { purity: true } },
+        variants: { include: { purity: true, diamondQuality: true } },
         collections: true,
       },
       orderBy: { updatedAt: "asc" },
@@ -101,7 +102,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               stoneRate: 0,
               status: "Active",
             },
-            include: { purity: true },
+            include: { purity: true, diamondQuality: true },
           });
           product.variants = [createdV];
         } catch {
@@ -180,6 +181,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             }),
           ),
         );
+
+        const variantsForMeta = product.variants.map((variant) => ({
+          ...variant,
+          shopifyVariantId: variantIdMap[variant.id] || variant.shopifyVariantId,
+        }));
+
+        try {
+          await syncProductJewelleryMetafields(
+            admin.graphql,
+            shopifyProductId,
+            variantsForMeta,
+            goldPricePerGram,
+            variantIdMap,
+          );
+        } catch (metaErr) {
+          errors.push(
+            `${product.sku} metafields: ${metaErr instanceof Error ? metaErr.message : "failed"}`,
+          );
+        }
 
         if (product.collections.length > 0) {
           for (const coll of product.collections) {

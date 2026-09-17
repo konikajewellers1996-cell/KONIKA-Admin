@@ -1,5 +1,6 @@
 import { priceToShopifyString, calculateProductPrice, type MakingChargeType } from "./pricing";
 import { htmlToPlainText, normalizeImageUrl } from "./text";
+import { syncProductJewelleryMetafields } from "./shopify-metafields.server";
 import prisma from "../db.server";
 
 
@@ -923,7 +924,7 @@ function toShopifyDescriptionHtml(description: string, fallbackTitle: string) {
 export async function syncAllProductPricesToShopify(graphql: GraphqlClient, goldPricePerGram: number) {
   const products = await prisma.product.findMany({
     include: {
-      variants: { include: { purity: true } },
+      variants: { include: { purity: true, diamondQuality: true } },
     },
   });
 
@@ -954,6 +955,12 @@ export async function syncAllProductPricesToShopify(graphql: GraphqlClient, gold
     if (variantsPayload.length > 0) {
       try {
         await updateShopifyVariantPrices(graphql, product.shopifyProductId, variantsPayload);
+        await syncProductJewelleryMetafields(
+          graphql,
+          product.shopifyProductId,
+          product.variants,
+          goldPricePerGram,
+        );
       } catch (error: any) {
         console.error(`[Shopify Price Sync] Failed to update prices for product ${product.sku}: ${error.message}`);
       }
@@ -1021,7 +1028,7 @@ export async function syncSingleProductToShopify(
   const product = await prisma.product.findUnique({
     where: { id: productId },
     include: {
-      variants: { include: { purity: true } },
+      variants: { include: { purity: true, diamondQuality: true } },
       collections: true,
     },
   });
@@ -1052,7 +1059,7 @@ export async function syncSingleProductToShopify(
           stoneRate: 0,
           status: "Active",
         },
-        include: { purity: true },
+        include: { purity: true, diamondQuality: true },
       });
       product.variants = [createdVariant];
     }
@@ -1128,6 +1135,24 @@ export async function syncSingleProductToShopify(
       }),
     ),
   );
+
+  // Refresh local variant Shopify IDs for metafield owners
+  const variantsForMeta = product.variants.map((variant) => ({
+    ...variant,
+    shopifyVariantId: variantIdMap[variant.id] || variant.shopifyVariantId,
+  }));
+
+  try {
+    await syncProductJewelleryMetafields(
+      graphql,
+      shopifyProductId,
+      variantsForMeta,
+      goldPricePerGram,
+      variantIdMap,
+    );
+  } catch (err) {
+    console.error("[Shopify Sync] Metafield sync failed:", err);
+  }
 
   if (product.collections.length > 0) {
     for (const coll of product.collections) {
