@@ -64,11 +64,32 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const goldPricePerGram = settings?.goldPricePerGram ?? 6500;
 
+  // De-duplicate products by SKU
+  const seenSkus = new Map<string, (typeof products)[0]>();
+  for (const p of products) {
+    const key = p.sku.trim().toUpperCase();
+    if (!seenSkus.has(key)) {
+      seenSkus.set(key, p);
+    } else {
+      const existing = seenSkus.get(key)!;
+      const curWeight = p.variants.reduce((sum, v) => sum + v.grossWeight, 0);
+      const existingWeight = existing.variants.reduce((sum, v) => sum + v.grossWeight, 0);
+      if (
+        curWeight > existingWeight ||
+        (curWeight === existingWeight && p.variants.length > existing.variants.length) ||
+        (!existing.shopifyProductId && p.shopifyProductId)
+      ) {
+        seenSkus.set(key, p);
+      }
+    }
+  }
+  const uniqueProducts = Array.from(seenSkus.values());
+
   // Process recent products with live pricing
   let totalCatalogValue = 0;
   let totalGrossGoldWeight = 0;
 
-  const catalogProducts = products.map((product) => {
+  const catalogProducts = uniqueProducts.map((product) => {
     const first = product.variants[0];
     const price = first
       ? calculateProductPrice({
@@ -80,7 +101,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           makingChargeType: first.makingChargeType as "percent" | "fixed",
           makingChargeValue: first.makingChargeValue,
           stoneRate: first.stoneRate,
-          goldPricePerGram,
+          goldPricePerGram: first.purity
+            ? (goldPricePerGram / 0.916) * first.purity.purityValue
+            : goldPricePerGram,
         }).total
       : 0;
 
@@ -97,7 +120,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       synced: Boolean(product.shopifyProductId),
       price,
       preview: first
-        ? `${first.metalColor} · ${first.purity.label} · ${formatGrams(first.grossWeight)}`
+        ? `${first.metalColor} · ${first.purity?.label || "22K"} · ${formatGrams(first.grossWeight)}`
         : "No variants",
       initials: initials(product.name),
       imageUrl: product.imageUrl || "",
@@ -147,7 +170,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }`
     );
 
-    const json = await ordersResponse.json();
+    const json: any = await ordersResponse.json();
     if (json.data?.orders?.edges) {
       realShopifyOrders = json.data.orders.edges.map((edge: any) => {
         const o = edge.node;

@@ -42,7 +42,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       collectionsSynced += 1;
     }
 
-    const products = await prisma.product.findMany({
+    const rawProducts = await prisma.product.findMany({
       include: {
         variants: { include: { purity: true } },
         collections: true,
@@ -50,13 +50,63 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       orderBy: { updatedAt: "asc" },
     });
 
+    // De-duplicate products by SKU
+    const seenSkus = new Map<string, (typeof rawProducts)[0]>();
+    for (const p of rawProducts) {
+      const key = p.sku.trim().toUpperCase();
+      if (!seenSkus.has(key)) {
+        seenSkus.set(key, p);
+      } else {
+        const existing = seenSkus.get(key)!;
+        const curWeight = p.variants.reduce((sum, v) => sum + v.grossWeight, 0);
+        const existingWeight = existing.variants.reduce((sum, v) => sum + v.grossWeight, 0);
+        if (
+          curWeight > existingWeight ||
+          (curWeight === existingWeight && p.variants.length > existing.variants.length) ||
+          (!existing.shopifyProductId && p.shopifyProductId)
+        ) {
+          seenSkus.set(key, p);
+        }
+      }
+    }
+    const products = Array.from(seenSkus.values());
+
     let productsSynced = 0;
     const errors: string[] = [];
 
+    const defaultMetal =
+      (await prisma.metalType.findFirst({ where: { status: "Active" } })) ||
+      (await prisma.metalType.findFirst());
+    const defaultPurity = defaultMetal
+      ? await prisma.purityLevel.findFirst({ where: { metalId: defaultMetal.id } })
+      : await prisma.purityLevel.findFirst();
+
     for (const product of products) {
-      if (!product.variants.length) {
-        errors.push(`${product.sku}: no variants`);
-        continue;
+      // If product has no variants, auto-create a default variant
+      if (!product.variants.length && defaultMetal && defaultPurity) {
+        try {
+          const createdV = await prisma.productVariant.create({
+            data: {
+              productId: product.id,
+              metalId: defaultMetal.id,
+              purityId: defaultPurity.id,
+              metalColor: defaultMetal.color || defaultMetal.name,
+              grossWeight: 0,
+              stoneIncluded: false,
+              stoneType: "None",
+              stoneWeight: 0,
+              wastagePercent: 5,
+              makingChargeType: "percent",
+              makingChargeValue: 10,
+              stoneRate: 0,
+              status: "Active",
+            },
+            include: { purity: true },
+          });
+          product.variants = [createdV];
+        } catch {
+          // ignore
+        }
       }
 
       try {
@@ -85,10 +135,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             })(),
             variants: product.variants.map((variant) => ({
               id: variant.id,
-              skuSuffix: `${variant.metalColor.replace(/\s+/g, "")}-${variant.purity.label}`,
+              shopifyVariantId: variant.shopifyVariantId,
+              skuSuffix: `${variant.metalColor.replace(/\s+/g, "")}-${variant.purity?.label || "22K"}`,
               color: variant.metalColor,
-              purityLabel: variant.purity.label,
+              purityLabel: variant.purity?.label || "22K",
               imageUrl: variant.imageUrl || undefined,
+              grossWeight: variant.grossWeight,
               price: calculateProductPrice({
                 grossWeight: variant.grossWeight,
                 stoneWeight: variant.stoneWeight,

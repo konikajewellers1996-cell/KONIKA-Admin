@@ -74,22 +74,65 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }));
     const imagesJson = JSON.stringify(imagesList);
 
-    // 4. Extract master SKU
-    const firstVariantSku = payload.variants?.[0]?.sku || "";
-    const sku = firstVariantSku.split("-")[0] || payload.handle || "JW-TEMP";
+    // 4. Extract candidate SKUs
+    const payloadVariants = payload.variants || [];
+    const variantSkus = payloadVariants
+      .map((v: any) => (typeof v.sku === "string" ? v.sku.trim() : ""))
+      .filter(Boolean);
+    const candidateSkus: string[] = Array.from(
+      new Set<string>(
+        variantSkus
+          .map((s: string) => s.split("-")[0].trim())
+          .filter((s: string): s is string => Boolean(s)),
+      ),
+    );
+    if (!candidateSkus.length && payload.handle) {
+      candidateSkus.push(String(payload.handle));
+    }
+    const sku = candidateSkus[0] || payload.handle || "JW-TEMP";
 
-    // 5. Create or update product
-    let product = await prisma.product.findFirst({
-      where: { shopifyProductId },
+    // 5. De-duplicate & locate existing product
+    const matchingProducts = await prisma.product.findMany({
+      where: {
+        OR: [
+          { shopifyProductId },
+          ...(candidateSkus.length ? [{ sku: { in: candidateSkus } }] : []),
+        ],
+      },
+      include: { variants: true },
     });
 
+    let product: any = null;
+    if (matchingProducts.length > 1) {
+      // Sort by variants with positive grossWeight first, then variant count
+      matchingProducts.sort((a: any, b: any) => {
+        const aWeight = (a.variants || []).reduce((sum: number, v: any) => sum + (v.grossWeight || 0), 0);
+        const bWeight = (b.variants || []).reduce((sum: number, v: any) => sum + (v.grossWeight || 0), 0);
+        if (bWeight !== aWeight) return bWeight - aWeight;
+        return (b.variants?.length || 0) - (a.variants?.length || 0);
+      });
+      product = matchingProducts[0];
+      const duplicateIds = matchingProducts.slice(1).map((p) => p.id);
+      await prisma.product.deleteMany({
+        where: { id: { in: duplicateIds } },
+      });
+      console.log(`[Product Webhook] Deduplicated and removed ${duplicateIds.length} duplicate products:`, duplicateIds);
+    } else if (matchingProducts.length === 1) {
+      product = matchingProducts[0];
+    } else if (payload.title) {
+      // Fallback search by title
+      product = await prisma.product.findFirst({
+        where: { name: { equals: payload.title, mode: "insensitive" } },
+      });
+    }
+
     const productData = {
-      sku,
+      sku: product?.sku || sku,
       name: payload.title || "Unnamed Product",
       description: payload.body_html || "",
-      imageUrl,
-      shopifyFileId,
-      imagesJson,
+      imageUrl: imageUrl || product?.imageUrl || "",
+      shopifyFileId: shopifyFileId || product?.shopifyFileId || null,
+      imagesJson: imagesList.length ? imagesJson : (product?.imagesJson || "[]"),
       gender,
       status: payload.status === "active" ? "Active" : "Draft",
     };
@@ -98,6 +141,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       product = await prisma.product.update({
         where: { id: product.id },
         data: {
+          shopifyProductId,
           ...productData,
           collections: {
             set: collectionIds.map((id) => ({ id })),
@@ -105,37 +149,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         },
       });
     } else {
-      // Check if matches existing by SKU
-      const existingBySku = await prisma.product.findFirst({
-        where: { sku },
+      product = await prisma.product.create({
+        data: {
+          shopifyProductId,
+          ...productData,
+          collections: {
+            connect: collectionIds.map((id) => ({ id })),
+          },
+        },
       });
-
-      if (existingBySku) {
-        product = await prisma.product.update({
-          where: { id: existingBySku.id },
-          data: {
-            shopifyProductId,
-            ...productData,
-            collections: {
-              set: collectionIds.map((id) => ({ id })),
-            },
-          },
-        });
-      } else {
-        product = await prisma.product.create({
-          data: {
-            shopifyProductId,
-            ...productData,
-            collections: {
-              connect: collectionIds.map((id) => ({ id })),
-            },
-          },
-        });
-      }
     }
 
-    // 6. Sync variants
-    const payloadVariants = payload.variants || [];
+    // 6. Sync variants preserving local jewellery calculations
     const syncedVariantIds: string[] = [];
 
     for (const v of payloadVariants) {
@@ -143,23 +168,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const grossWeight = typeof v.grams === "number" ? v.grams : (parseFloat(v.weight) || 0);
 
       // Find metal by matching color (option1)
-      const colorVal = v.option1 || "";
-      let metal = await prisma.metalType.findFirst({
-        where: { color: { equals: colorVal, mode: "insensitive" } },
-      });
-      if (!metal) {
+      const colorVal = v.option1 && v.option1 !== "Default Title" ? v.option1 : "";
+      let metal = null;
+      if (colorVal) {
         metal = await prisma.metalType.findFirst({
-          where: { name: { equals: colorVal, mode: "insensitive" } },
+          where: { color: { equals: colorVal, mode: "insensitive" } },
         });
+        if (!metal) {
+          metal = await prisma.metalType.findFirst({
+            where: { name: { equals: colorVal, mode: "insensitive" } },
+          });
+        }
       }
       if (!metal) {
-        metal = await prisma.metalType.findFirst();
+        metal = await prisma.metalType.findFirst({ where: { status: "Active" } }) || await prisma.metalType.findFirst();
       }
 
-      // Find purity by label (option2)
-      const purityLabel = v.option2 || "";
+      // Find purity by label (option2 or option1)
+      const purityLabel = v.option2 && v.option2 !== "Default Title" ? v.option2 : (colorVal ? "" : (v.option1 !== "Default Title" ? v.option1 : ""));
       let purity = null;
-      if (metal) {
+      if (metal && purityLabel) {
         purity = await prisma.purityLevel.findFirst({
           where: {
             metalId: metal.id,
@@ -167,9 +195,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           },
         });
       }
-      if (!purity) {
+      if (!purity && purityLabel) {
         purity = await prisma.purityLevel.findFirst({
           where: { label: { equals: purityLabel, mode: "insensitive" } },
+        });
+      }
+      if (!purity && metal) {
+        purity = await prisma.purityLevel.findFirst({
+          where: { metalId: metal.id },
         });
       }
       if (!purity) {
@@ -181,18 +214,38 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         continue;
       }
 
-      const existingVariant = await prisma.productVariant.findFirst({
+      // Check if variant already exists
+      let existingVariant = await prisma.productVariant.findFirst({
         where: { shopifyVariantId },
       });
 
+      if (!existingVariant && product) {
+        existingVariant = await prisma.productVariant.findFirst({
+          where: {
+            productId: product.id,
+            metalId: metal.id,
+            purityId: purity.id,
+          },
+        });
+      }
+
+      if (!existingVariant && product && payloadVariants.length === 1) {
+        existingVariant = await prisma.productVariant.findFirst({
+          where: { productId: product.id },
+        });
+      }
+
       if (existingVariant) {
+        // IMPORTANT: Never overwrite positive grossWeight with 0 from webhook!
+        const updatedWeight = grossWeight > 0 ? grossWeight : existingVariant.grossWeight;
         const updated = await prisma.productVariant.update({
           where: { id: existingVariant.id },
           data: {
+            shopifyVariantId,
             metalId: metal.id,
             purityId: purity.id,
-            metalColor: metal.color,
-            grossWeight,
+            metalColor: metal.color || metal.name,
+            grossWeight: updatedWeight,
           },
         });
         syncedVariantIds.push(updated.id);
@@ -202,8 +255,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             productId: product.id,
             metalId: metal.id,
             purityId: purity.id,
-            metalColor: metal.color,
-            grossWeight,
+            metalColor: metal.color || metal.name,
+            grossWeight: grossWeight > 0 ? grossWeight : 0,
             stoneIncluded: false,
             stoneType: "None",
             stoneWeight: 0,
@@ -219,16 +272,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
 
-    // Delete variants that are no longer present on Shopify
-    await prisma.productVariant.deleteMany({
-      where: {
-        productId: product.id,
-        id: { notIn: syncedVariantIds },
-      },
-    });
+    // Delete variants that are no longer present on Shopify only if at least one variant was successfully synced
+    if (syncedVariantIds.length > 0) {
+      await prisma.productVariant.deleteMany({
+        where: {
+          productId: product.id,
+          id: { notIn: syncedVariantIds },
+        },
+      });
+    }
 
     console.log(`[Product Webhook] Synced product "${product.name}" (ID: ${product.id}) with ${syncedVariantIds.length} variants.`);
   }
 
   return new Response();
 };
+

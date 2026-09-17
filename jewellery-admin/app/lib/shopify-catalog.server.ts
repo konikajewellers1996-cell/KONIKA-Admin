@@ -13,6 +13,8 @@ type SyncVariantInput = {
   color: string;
   purityLabel: string;
   price: number;
+  grossWeight?: number;
+  shopifyVariantId?: string | null;
   status: string;
   imageUrl?: string;
 };
@@ -239,21 +241,78 @@ export async function syncProductToShopify(
   input: SyncProductInput,
   existingProductId?: string | null,
 ) {
-  const colors = [...new Set(input.variants.map((v) => v.color))];
-  const purities = [...new Set(input.variants.map((v) => v.purityLabel))];
+  const colors = [...new Set(input.variants.map((v) => v.color).filter(Boolean))];
+  const purities = [...new Set(input.variants.map((v) => v.purityLabel).filter(Boolean))];
 
-  if (!colors.length || !purities.length) {
-    throw new Error("Product needs at least one colour and purity variant");
+  // Determine options structure
+  const productOptions: Array<{ name: string; values: Array<{ name: string }> }> = [];
+  if (colors.length > 0 && purities.length > 0) {
+    productOptions.push({ name: "Colour", values: colors.map((name) => ({ name })) });
+    productOptions.push({ name: "Purity", values: purities.map((name) => ({ name })) });
+  } else if (colors.length > 0) {
+    productOptions.push({ name: "Colour", values: colors.map((name) => ({ name })) });
+  } else if (purities.length > 0) {
+    productOptions.push({ name: "Purity", values: purities.map((name) => ({ name })) });
   }
 
-  let shopifyProductId = existingProductId ?? null;
+  // Check if existingProductId exists on Shopify
+  let remoteProduct: {
+    id: string;
+    variants?: {
+      nodes: Array<{
+        id: string;
+        title: string;
+        sku: string;
+        selectedOptions: Array<{ name: string; value: string }>;
+      }>;
+    };
+  } | null = null;
 
-  if (shopifyProductId) {
-    await deleteProductFromShopify(graphql, shopifyProductId);
-    shopifyProductId = null;
+  if (existingProductId) {
+    try {
+      const checkRes = await gql<{
+        product: {
+          id: string;
+          variants: {
+            nodes: Array<{
+              id: string;
+              title: string;
+              sku: string;
+              selectedOptions: Array<{ name: string; value: string }>;
+            }>;
+          };
+        } | null;
+      }>(
+        graphql,
+        `#graphql
+        query checkProduct($id: ID!) {
+          product(id: $id) {
+            id
+            variants(first: 100) {
+              nodes {
+                id
+                title
+                sku
+                selectedOptions { name value }
+              }
+            }
+          }
+        }`,
+        { id: existingProductId },
+        "Check existing product",
+      );
+      if (checkRes.product?.id) {
+        remoteProduct = checkRes.product;
+      }
+    } catch {
+      remoteProduct = null;
+    }
   }
 
-  const product: Record<string, unknown> = {
+  let shopifyProductId = remoteProduct?.id ?? null;
+  const variantIdMap: Record<string, string> = {};
+
+  const productPayload: Record<string, unknown> = {
     title: input.title,
     descriptionHtml: input.description
       ? `<p>${escapeHtml(input.description)}</p>`
@@ -262,13 +321,8 @@ export async function syncProductToShopify(
     productType: "Jewellery",
     status: input.status,
     tags: [input.gender, "jewellery-admin"].filter(Boolean),
-    productOptions: [
-      { name: "Colour", values: colors.map((name) => ({ name })) },
-      { name: "Purity", values: purities.map((name) => ({ name })) },
-    ],
   };
 
-  const variables: Record<string, unknown> = { product };
   const mediaItems: Array<{
     originalSource: string;
     alt: string;
@@ -297,116 +351,403 @@ export async function syncProductToShopify(
     if (mediaItems.some((m) => m.originalSource === variant.imageUrl)) continue;
     mediaItems.push({
       originalSource: variant.imageUrl,
-      alt: `${input.title} ${variant.color} ${variant.purityLabel}`,
+      alt: `${input.title} ${variant.color || ""} ${variant.purityLabel || ""}`.trim(),
       mediaContentType: "IMAGE",
     });
   }
 
-  const createData = await gql<{
-    productCreate: {
-      product: { id: string } | null;
-      userErrors: Array<{ message: string; field?: string[] }>;
-    };
-  }>(
-    graphql,
-    `#graphql
-    mutation productCreate($product: ProductCreateInput!) {
-      productCreate(product: $product) {
-        product { id }
-        userErrors { field message }
-      }
-    }`,
-    variables,
-    "Product create",
-  );
-
-  assertNoUserErrors(createData.productCreate.userErrors, "Product create");
-  shopifyProductId = createData.productCreate.product?.id ?? null;
-  if (!shopifyProductId) {
-    throw new Error("Product create: no product id returned from Shopify");
-  }
-
-  if (mediaItems.length) {
-    const mediaData = await gql<{
-      productCreateMedia: {
-        media: Array<{ id?: string; status?: string }> | null;
-        mediaUserErrors: Array<{ message: string }>;
+  if (shopifyProductId && remoteProduct) {
+    // 1. UPDATE EXISTING SHOPIFY PRODUCT (NON-DESTRUCTIVE)
+    const updateRes = await gql<{
+      productUpdate: {
+        product: { id: string } | null;
+        userErrors: Array<{ message: string; field?: string[] }>;
       };
     }>(
       graphql,
       `#graphql
-      mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
-        productCreateMedia(productId: $productId, media: $media) {
-          media { ... on MediaImage { id status } }
-          mediaUserErrors { field message }
+      mutation productUpdate($input: ProductInput!) {
+        productUpdate(input: $input) {
+          product { id }
+          userErrors { field message }
         }
       }`,
-      { productId: shopifyProductId, media: mediaItems },
-      "Product media",
+      { input: { id: shopifyProductId, ...productPayload } },
+      "Product update",
     );
-    assertNoUserErrors(mediaData.productCreateMedia.mediaUserErrors, "Product media");
-  }
+    assertNoUserErrors(updateRes.productUpdate.userErrors, "Product update");
 
-  const variantPayload = input.variants.map((variant) => ({
-    price: priceToShopifyString(variant.price),
-    optionValues: [
-      { optionName: "Colour", name: variant.color },
-      { optionName: "Purity", name: variant.purityLabel },
-    ],
-    inventoryItem: {
-      sku: `${input.sku}-${variant.skuSuffix}`.slice(0, 100),
-    },
-    ...(variant.imageUrl ? { mediaSrc: [variant.imageUrl] } : {}),
-  }));
-
-  const variantsData = await gql<{
-    productVariantsBulkCreate: {
-      productVariants: Array<{
-        id: string;
-        selectedOptions: Array<{ name: string; value: string }>;
-      }> | null;
-      userErrors: Array<{ message: string; field?: string[] }>;
-    };
-  }>(
-    graphql,
-    `#graphql
-    mutation productVariantsBulkCreate(
-      $productId: ID!
-      $strategy: ProductVariantsBulkCreateStrategy
-      $variants: [ProductVariantsBulkInput!]!
-    ) {
-      productVariantsBulkCreate(productId: $productId, strategy: $strategy, variants: $variants) {
-        productVariants {
-          id
-          selectedOptions { name value }
-        }
-        userErrors { field message }
+    if (mediaItems.length) {
+      try {
+        await gql(
+          graphql,
+          `#graphql
+          mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+            productCreateMedia(productId: $productId, media: $media) {
+              media { ... on MediaImage { id status } }
+              mediaUserErrors { field message }
+            }
+          }`,
+          { productId: shopifyProductId, media: mediaItems },
+          "Product media",
+        );
+      } catch {
+        // best effort
       }
-    }`,
-    {
-      productId: shopifyProductId,
-      strategy: "REMOVE_STANDALONE_VARIANT",
-      variants: variantPayload,
-    },
-    "Variant create",
-  );
+    }
 
-  assertNoUserErrors(
-    variantsData.productVariantsBulkCreate.userErrors,
-    "Variant create",
-  );
+    const remoteVariants = remoteProduct.variants?.nodes || [];
 
-  const createdVariants =
-    variantsData.productVariantsBulkCreate.productVariants ?? [];
+    if (input.variants.length === 0) {
+      if (remoteVariants.length > 0) {
+        try {
+          await gql(
+            graphql,
+            `#graphql
+            mutation updateDefaultVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+              productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+                userErrors { field message }
+              }
+            }`,
+            {
+              productId: shopifyProductId,
+              variants: [
+                {
+                  id: remoteVariants[0].id,
+                  inventoryItem: { sku: input.sku.slice(0, 100) },
+                },
+              ],
+            },
+            "Default variant update",
+          );
+        } catch {
+          // ignore
+        }
+      }
+    } else {
+      const matchedRemoteIds = new Set<string>();
+      const variantsToUpdate: Array<Record<string, unknown>> = [];
+      const variantsToCreate: Array<Record<string, unknown>> = [];
 
-  const variantIdMap: Record<string, string> = {};
-  for (const local of input.variants) {
-    const match = createdVariants.find((remote) => {
-      const color = remote.selectedOptions.find((o) => o.name === "Colour")?.value;
-      const purity = remote.selectedOptions.find((o) => o.name === "Purity")?.value;
-      return color === local.color && purity === local.purityLabel;
-    });
-    if (match) variantIdMap[local.id] = match.id;
+      for (const local of input.variants) {
+        let matched = remoteVariants.find(
+          (rv) =>
+            rv.id === local.shopifyVariantId ||
+            (local.shopifyVariantId && rv.id.endsWith(local.shopifyVariantId.split("/").pop() || "")),
+        );
+
+        if (!matched && productOptions.length > 0) {
+          matched = remoteVariants.find((rv) => {
+            if (matchedRemoteIds.has(rv.id)) return false;
+            const cVal = rv.selectedOptions?.find((o) => o.name === "Colour")?.value;
+            const pVal = rv.selectedOptions?.find((o) => o.name === "Purity")?.value;
+            if (colors.length > 0 && purities.length > 0) {
+              return cVal === local.color && pVal === local.purityLabel;
+            }
+            if (colors.length > 0) return cVal === local.color;
+            if (purities.length > 0) return pVal === local.purityLabel;
+            return false;
+          });
+        }
+
+        if (!matched && remoteVariants.length === 1 && input.variants.length === 1) {
+          matched = remoteVariants[0];
+        }
+
+        const optionValues: Array<{ optionName: string; name: string }> = [];
+        if (colors.length > 0 && purities.length > 0) {
+          optionValues.push({ optionName: "Colour", name: local.color });
+          optionValues.push({ optionName: "Purity", name: local.purityLabel });
+        } else if (colors.length > 0) {
+          optionValues.push({ optionName: "Colour", name: local.color });
+        } else if (purities.length > 0) {
+          optionValues.push({ optionName: "Purity", name: local.purityLabel });
+        }
+
+        const invSku = `${input.sku}${local.skuSuffix ? `-${local.skuSuffix}` : ""}`.slice(0, 100);
+
+        if (matched) {
+          matchedRemoteIds.add(matched.id);
+          variantIdMap[local.id] = matched.id;
+          variantsToUpdate.push({
+            id: matched.id,
+            price: priceToShopifyString(local.price),
+            ...(optionValues.length ? { optionValues } : {}),
+            inventoryItem: {
+              sku: invSku,
+              ...(Number(local.grossWeight) > 0
+                ? { measurement: { weight: { unit: "GRAMS", value: Number(local.grossWeight) } } }
+                : {}),
+            },
+            ...(local.imageUrl ? { mediaSrc: [local.imageUrl] } : {}),
+          });
+        } else {
+          variantsToCreate.push({
+            price: priceToShopifyString(local.price),
+            ...(optionValues.length ? { optionValues } : {}),
+            inventoryItem: {
+              sku: invSku,
+              ...(Number(local.grossWeight) > 0
+                ? { measurement: { weight: { unit: "GRAMS", value: Number(local.grossWeight) } } }
+                : {}),
+            },
+            ...(local.imageUrl ? { mediaSrc: [local.imageUrl] } : {}),
+          });
+        }
+      }
+
+      if (variantsToUpdate.length > 0) {
+        const updateVarRes = await gql<{
+          productVariantsBulkUpdate: {
+            productVariants: Array<{ id: string }> | null;
+            userErrors: Array<{ message: string; field?: string[] }>;
+          };
+        }>(
+          graphql,
+          `#graphql
+          mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+              productVariants { id }
+              userErrors { field message }
+            }
+          }`,
+          { productId: shopifyProductId, variants: variantsToUpdate },
+          "Variant update",
+        );
+        assertNoUserErrors(updateVarRes.productVariantsBulkUpdate.userErrors, "Variant update");
+      }
+
+      if (variantsToCreate.length > 0) {
+        const createVarRes = await gql<{
+          productVariantsBulkCreate: {
+            productVariants: Array<{
+              id: string;
+              selectedOptions: Array<{ name: string; value: string }>;
+            }> | null;
+            userErrors: Array<{ message: string; field?: string[] }>;
+          };
+        }>(
+          graphql,
+          `#graphql
+          mutation productVariantsBulkCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+            productVariantsBulkCreate(productId: $productId, variants: $variants) {
+              productVariants {
+                id
+                selectedOptions { name value }
+              }
+              userErrors { field message }
+            }
+          }`,
+          { productId: shopifyProductId, variants: variantsToCreate },
+          "Variant create",
+        );
+        assertNoUserErrors(createVarRes.productVariantsBulkCreate.userErrors, "Variant create");
+
+        const newlyCreated = createVarRes.productVariantsBulkCreate.productVariants || [];
+        for (const local of input.variants) {
+          if (!variantIdMap[local.id]) {
+            const found = newlyCreated.find((nc) => {
+              const cVal = nc.selectedOptions?.find((o) => o.name === "Colour")?.value;
+              const pVal = nc.selectedOptions?.find((o) => o.name === "Purity")?.value;
+              if (colors.length > 0 && purities.length > 0) {
+                return cVal === local.color && pVal === local.purityLabel;
+              }
+              return true;
+            });
+            if (found) variantIdMap[local.id] = found.id;
+          }
+        }
+      }
+    }
+  } else {
+    // 2. CREATE NEW PRODUCT ON SHOPIFY
+    const productCreateInput: Record<string, unknown> = {
+      ...productPayload,
+      ...(productOptions.length ? { productOptions } : {}),
+    };
+
+    const createData = await gql<{
+      productCreate: {
+        product: {
+          id: string;
+          variants: { nodes: Array<{ id: string }> };
+        } | null;
+        userErrors: Array<{ message: string; field?: string[] }>;
+      };
+    }>(
+      graphql,
+      `#graphql
+      mutation productCreate($product: ProductCreateInput!) {
+        productCreate(product: $product) {
+          product {
+            id
+            variants(first: 10) { nodes { id } }
+          }
+          userErrors { field message }
+        }
+      }`,
+      { product: productCreateInput },
+      "Product create",
+    );
+
+    assertNoUserErrors(createData.productCreate.userErrors, "Product create");
+    shopifyProductId = createData.productCreate.product?.id ?? null;
+    if (!shopifyProductId) {
+      throw new Error("Product create: no product id returned from Shopify");
+    }
+
+    if (mediaItems.length) {
+      try {
+        await gql(
+          graphql,
+          `#graphql
+          mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+            productCreateMedia(productId: $productId, media: $media) {
+              media { ... on MediaImage { id status } }
+              mediaUserErrors { field message }
+            }
+          }`,
+          { productId: shopifyProductId, media: mediaItems },
+          "Product media",
+        );
+      } catch {
+        // best effort
+      }
+    }
+
+    if (input.variants.length === 0) {
+      const defaultVariants = createData.productCreate.product?.variants?.nodes || [];
+      if (defaultVariants.length > 0) {
+        try {
+          await gql(
+            graphql,
+            `#graphql
+            mutation updateDefaultVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+              productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+                userErrors { field message }
+              }
+            }`,
+            {
+              productId: shopifyProductId,
+              variants: [
+                {
+                  id: defaultVariants[0].id,
+                  inventoryItem: { sku: input.sku.slice(0, 100) },
+                },
+              ],
+            },
+            "Default variant update",
+          );
+        } catch {
+          // ignore
+        }
+      }
+    } else if (productOptions.length === 0) {
+      const defaultVariants = createData.productCreate.product?.variants?.nodes || [];
+      if (defaultVariants.length > 0) {
+        const firstVar = input.variants[0];
+        variantIdMap[firstVar.id] = defaultVariants[0].id;
+        await gql(
+          graphql,
+          `#graphql
+          mutation updateDefaultVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+              userErrors { field message }
+            }
+          }`,
+          {
+            productId: shopifyProductId,
+            variants: [
+              {
+                id: defaultVariants[0].id,
+                price: priceToShopifyString(firstVar.price),
+                inventoryItem: {
+                  sku: `${input.sku}${firstVar.skuSuffix ? `-${firstVar.skuSuffix}` : ""}`.slice(0, 100),
+                  ...(Number(firstVar.grossWeight) > 0
+                    ? { measurement: { weight: { unit: "GRAMS", value: Number(firstVar.grossWeight) } } }
+                    : {}),
+                },
+                ...(firstVar.imageUrl ? { mediaSrc: [firstVar.imageUrl] } : {}),
+              },
+            ],
+          },
+          "Default variant update",
+        );
+      }
+    } else {
+      const variantPayload = input.variants.map((variant) => {
+        const optionValues: Array<{ optionName: string; name: string }> = [];
+        if (colors.length > 0 && purities.length > 0) {
+          optionValues.push({ optionName: "Colour", name: variant.color });
+          optionValues.push({ optionName: "Purity", name: variant.purityLabel });
+        } else if (colors.length > 0) {
+          optionValues.push({ optionName: "Colour", name: variant.color });
+        } else if (purities.length > 0) {
+          optionValues.push({ optionName: "Purity", name: variant.purityLabel });
+        }
+
+        return {
+          price: priceToShopifyString(variant.price),
+          optionValues,
+          inventoryItem: {
+            sku: `${input.sku}-${variant.skuSuffix}`.slice(0, 100),
+            ...(Number(variant.grossWeight) > 0
+              ? { measurement: { weight: { unit: "GRAMS", value: Number(variant.grossWeight) } } }
+              : {}),
+          },
+          ...(variant.imageUrl ? { mediaSrc: [variant.imageUrl] } : {}),
+        };
+      });
+
+      const variantsData = await gql<{
+        productVariantsBulkCreate: {
+          productVariants: Array<{
+            id: string;
+            selectedOptions: Array<{ name: string; value: string }>;
+          }> | null;
+          userErrors: Array<{ message: string; field?: string[] }>;
+        };
+      }>(
+        graphql,
+        `#graphql
+        mutation productVariantsBulkCreate(
+          $productId: ID!
+          $strategy: ProductVariantsBulkCreateStrategy
+          $variants: [ProductVariantsBulkInput!]!
+        ) {
+          productVariantsBulkCreate(productId: $productId, strategy: $strategy, variants: $variants) {
+            productVariants {
+              id
+              selectedOptions { name value }
+            }
+            userErrors { field message }
+          }
+        }`,
+        {
+          productId: shopifyProductId,
+          strategy: "REMOVE_STANDALONE_VARIANT",
+          variants: variantPayload,
+        },
+        "Variant create",
+      );
+
+      assertNoUserErrors(variantsData.productVariantsBulkCreate.userErrors, "Variant create");
+
+      const createdVariants = variantsData.productVariantsBulkCreate.productVariants ?? [];
+      for (const local of input.variants) {
+        const match = createdVariants.find((remote) => {
+          const color = remote.selectedOptions.find((o) => o.name === "Colour")?.value;
+          const purity = remote.selectedOptions.find((o) => o.name === "Purity")?.value;
+          if (colors.length > 0 && purities.length > 0) {
+            return color === local.color && purity === local.purityLabel;
+          }
+          if (colors.length > 0) return color === local.color;
+          if (purities.length > 0) return purity === local.purityLabel;
+          return true;
+        });
+        if (match) variantIdMap[local.id] = match.id;
+      }
+    }
   }
 
   if (input.status === "ACTIVE") {
@@ -599,7 +940,31 @@ export async function syncSingleProductToShopify(
   }
 
   if (!product.variants.length) {
-    throw new Error("Product has no variants");
+    const defaultMetal = await prisma.metalType.findFirst({ where: { status: "Active" } });
+    const defaultPurity = defaultMetal
+      ? await prisma.purityLevel.findFirst({ where: { metalId: defaultMetal.id } })
+      : await prisma.purityLevel.findFirst();
+    if (defaultMetal && defaultPurity) {
+      const createdVariant = await prisma.productVariant.create({
+        data: {
+          productId: product.id,
+          metalId: defaultMetal.id,
+          purityId: defaultPurity.id,
+          metalColor: defaultMetal.color,
+          grossWeight: 0,
+          stoneIncluded: false,
+          stoneType: "None",
+          stoneWeight: 0,
+          wastagePercent: 5,
+          makingChargeType: "percent",
+          makingChargeValue: 10,
+          stoneRate: 0,
+          status: "Active",
+        },
+        include: { purity: true },
+      });
+      product.variants = [createdVariant];
+    }
   }
 
   const { shopifyProductId, variantIdMap } = await syncProductToShopify(
@@ -627,10 +992,12 @@ export async function syncSingleProductToShopify(
       })(),
       variants: product.variants.map((variant) => ({
         id: variant.id,
-        skuSuffix: `${variant.metalColor.replace(/\s+/g, "")}-${variant.purity.label}`,
+        shopifyVariantId: variant.shopifyVariantId,
+        skuSuffix: `${variant.metalColor.replace(/\s+/g, "")}-${variant.purity?.label || "22K"}`,
         color: variant.metalColor,
-        purityLabel: variant.purity.label,
+        purityLabel: variant.purity?.label || "22K",
         imageUrl: variant.imageUrl || undefined,
+        grossWeight: variant.grossWeight,
         price: calculateProductPrice({
           grossWeight: variant.grossWeight,
           stoneWeight: variant.stoneWeight,

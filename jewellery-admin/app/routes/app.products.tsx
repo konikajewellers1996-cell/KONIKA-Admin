@@ -27,6 +27,13 @@ import {
   readFormFile,
   uploadImageToShopifyFiles,
 } from "../lib/shopify-files.server";
+import {
+  buildProductCsv,
+  buildProductExcel,
+  groupProductExcelRows,
+  parseProductExcel,
+  type ProductExportVariant,
+} from "../lib/product-excel";
 
 type VariantDraft = {
   key: string;
@@ -147,7 +154,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     prisma.product.findMany({
       include: {
         collections: true,
-        variants: { include: { metal: true, purity: true } },
+        variants: {
+          include: {
+            metal: true,
+            purity: true,
+            diamondQuality: true,
+          },
+        },
       },
       orderBy: { updatedAt: "desc" },
     }),
@@ -159,7 +172,40 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const goldPricePerGram = settings?.goldPricePerGram ?? 6500;
 
-  const catalog = products.map((product) => {
+  // De-duplicate products by SKU / shopifyProductId
+  const seenSkus = new Map<string, (typeof products)[0]>();
+  const duplicateProductIds: string[] = [];
+
+  for (const p of products) {
+    const key = p.sku.trim().toUpperCase();
+    if (!seenSkus.has(key)) {
+      seenSkus.set(key, p);
+    } else {
+      const existing = seenSkus.get(key)!;
+      const existingWeight = existing.variants.reduce((sum, v) => sum + v.grossWeight, 0);
+      const curWeight = p.variants.reduce((sum, v) => sum + v.grossWeight, 0);
+      if (
+        curWeight > existingWeight ||
+        (curWeight === existingWeight && p.variants.length > existing.variants.length) ||
+        (!existing.shopifyProductId && p.shopifyProductId)
+      ) {
+        duplicateProductIds.push(existing.id);
+        seenSkus.set(key, p);
+      } else {
+        duplicateProductIds.push(p.id);
+      }
+    }
+  }
+
+  if (duplicateProductIds.length > 0) {
+    prisma.product
+      .deleteMany({ where: { id: { in: duplicateProductIds } } })
+      .catch((e) => console.error("Error cleaning duplicate products:", e));
+  }
+
+  const uniqueProducts = Array.from(seenSkus.values());
+
+  const catalog = uniqueProducts.map((product) => {
     const prices = product.variants.map((variant) =>
       calculateProductPrice({
         grossWeight: variant.grossWeight,
@@ -212,6 +258,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         stoneWeight: variant.stoneWeight,
         diamondCategory: variant.diamondCategory,
         diamondQualityId: variant.diamondQualityId,
+        diamondQualityName: variant.diamondQuality?.name || "",
         diamondCount: variant.diamondCount,
         pricePerCarat: variant.pricePerCarat,
         wastagePercent: variant.wastagePercent,
@@ -221,7 +268,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         status: variant.status as "Active" | "Draft",
         imageUrl: variant.imageUrl,
         shopifyFileId: variant.shopifyFileId,
-        label: `${variant.metalColor} · ${variant.purity.label}`,
+        purityLabel: variant.purity?.label || "",
+        label: `${variant.metalColor} · ${variant.purity?.label || "22K"}`,
         price: calculateProductPrice({
           grossWeight: variant.grossWeight,
           stoneWeight: variant.stoneWeight,
@@ -260,6 +308,239 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { ok: true, message: "Product deleted from app and Shopify.", clearEdit: true };
     }
 
+    if (intent === "import-product-excel") {
+      const uploaded = form.get("excelFile");
+      if (!(uploaded instanceof File) || uploaded.size === 0) {
+        return { ok: false, message: "Choose an Excel file (.xlsx) to import products." };
+      }
+
+      const fileName = uploaded.name.toLowerCase();
+      const rows = fileName.endsWith(".csv")
+        ? parseProductExcel(await uploaded.text())
+        : parseProductExcel(new Uint8Array(await uploaded.arrayBuffer()));
+
+      if (!rows.length) {
+        return { ok: false, message: "No product rows found in the Excel file." };
+      }
+
+      const [metals, purities, collections, diamondQualities, existingProducts] =
+        await Promise.all([
+          prisma.metalType.findMany(),
+          prisma.purityLevel.findMany({ include: { metal: true } }),
+          prisma.collection.findMany(),
+          prisma.diamondQuality.findMany({ include: { slabs: true } }),
+          prisma.product.findMany({ select: { sku: true } }),
+        ]);
+
+      const existingSkus = new Set(
+        existingProducts.map((p) => p.sku.trim().toLowerCase()),
+      );
+      const metalByColor = new Map(
+        metals.map((m) => [m.color.trim().toLowerCase(), m]),
+      );
+      const purityByKey = new Map(
+        purities.map((p) => [
+          `${p.metal.color.trim().toLowerCase()}|${p.label.trim().toLowerCase()}`,
+          p,
+        ]),
+      );
+      const purityByLabel = new Map(
+        purities.map((p) => [p.label.trim().toLowerCase(), p]),
+      );
+      const collectionByName = new Map(
+        collections.map((c) => [c.name.trim().toLowerCase(), c]),
+      );
+      const qualityByName = new Map(
+        diamondQualities.map((q) => [q.name.trim().toLowerCase(), q]),
+      );
+
+      const grouped = groupProductExcelRows(rows);
+      let created = 0;
+      let skipped = 0;
+      let variantsCreated = 0;
+      const syncFailures: string[] = [];
+
+      for (const [, productRows] of grouped) {
+        const first = productRows[0];
+        const sku = first.sku.trim();
+        const name = first.name.trim() || sku;
+        if (!sku) {
+          skipped += 1;
+          continue;
+        }
+        if (existingSkus.has(sku.toLowerCase())) {
+          skipped += 1;
+          continue;
+        }
+
+        const variantCreateData: Array<{
+          metalId: string;
+          purityId: string;
+          metalColor: string;
+          grossWeight: number;
+          stoneIncluded: boolean;
+          stoneType: string;
+          stoneWeight: number;
+          diamondCategory: string;
+          diamondQualityId: string | null;
+          diamondCount: number;
+          pricePerCarat: number;
+          wastagePercent: number;
+          makingChargeType: string;
+          makingChargeValue: number;
+          stoneRate: number;
+          status: string;
+        }> = [];
+
+        let rowFailed = false;
+        const seenVariantKeys = new Set<string>();
+
+        for (const row of productRows) {
+          const metal =
+            metalByColor.get(row.metalColor.toLowerCase()) ||
+            metals.find(
+              (m) => m.name.trim().toLowerCase() === row.metalColor.toLowerCase(),
+            );
+          if (!metal) {
+            skipped += 1;
+            rowFailed = true;
+            break;
+          }
+
+          const purity =
+            purityByKey.get(
+              `${metal.color.trim().toLowerCase()}|${row.purityLabel.trim().toLowerCase()}`,
+            ) || purityByLabel.get(row.purityLabel.trim().toLowerCase());
+          if (!purity) {
+            skipped += 1;
+            rowFailed = true;
+            break;
+          }
+
+          if (!(row.grossWeight > 0)) {
+            skipped += 1;
+            rowFailed = true;
+            break;
+          }
+
+          const variantKey = `${metal.id}|${purity.id}|${metal.color}`;
+          if (seenVariantKeys.has(variantKey)) {
+            continue;
+          }
+          seenVariantKeys.add(variantKey);
+
+          const stoneIncluded = Boolean(
+            row.stoneIncluded ||
+              (row.stoneType && row.stoneType !== "None" && row.stoneWeight > 0),
+          );
+          const stoneType = stoneIncluded
+            ? row.stoneType && row.stoneType !== "None"
+              ? row.stoneType
+              : "Diamond"
+            : "None";
+
+          let diamondQualityId: string | null = null;
+          let pricePerCarat = 0;
+          let stoneRate = stoneIncluded ? Number(row.stoneRate) || 0 : 0;
+          let diamondCount = 1;
+          let diamondCategory = "";
+
+          if (stoneIncluded && stoneType === "Diamond") {
+            const quality = qualityByName.get(row.diamondQuality.trim().toLowerCase());
+            if (!quality) {
+              skipped += 1;
+              rowFailed = true;
+              break;
+            }
+            const quote = quoteDiamondValue({
+              totalCarat: Number(row.stoneWeight) || 0,
+              diamondCount: Number(row.diamondCount) || 1,
+              quality: {
+                id: quality.id,
+                name: quality.name,
+                color: quality.color,
+                clarity: quality.clarity,
+                slabs: quality.slabs,
+              },
+            });
+            if (!quote.ok) {
+              skipped += 1;
+              rowFailed = true;
+              break;
+            }
+            diamondQualityId = quality.id;
+            pricePerCarat = quote.pricePerCarat;
+            stoneRate = quote.diamondValue;
+            diamondCount = quote.diamondCount;
+            diamondCategory = row.diamondCut || "Round";
+          }
+
+          variantCreateData.push({
+            metalId: metal.id,
+            purityId: purity.id,
+            metalColor: metal.color,
+            grossWeight: Number(row.grossWeight) || 0,
+            stoneIncluded,
+            stoneType,
+            stoneWeight: stoneIncluded ? Number(row.stoneWeight) || 0 : 0,
+            diamondCategory,
+            diamondQualityId,
+            diamondCount,
+            pricePerCarat,
+            wastagePercent: Number(row.wastagePercent) || 0,
+            makingChargeType: row.makingChargeType === "fixed" ? "fixed" : "percent",
+            makingChargeValue: Number(row.makingChargeValue) || 0,
+            stoneRate,
+            status: row.variantStatus === "Draft" ? "Draft" : "Active",
+          });
+        }
+
+        if (rowFailed || !variantCreateData.length) {
+          continue;
+        }
+
+        const collectionIds = first.collections
+          .split(/[,|;]/)
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .map((namePart) => collectionByName.get(namePart.toLowerCase())?.id)
+          .filter((id): id is string => Boolean(id));
+
+        const createdProduct = await prisma.product.create({
+          data: {
+            sku,
+            name,
+            description: first.description || "",
+            gender: first.gender || "Unisex",
+            status: first.status === "Draft" ? "Draft" : "Active",
+            variants: { create: variantCreateData },
+            collections: collectionIds.length
+              ? { connect: collectionIds.map((id) => ({ id })) }
+              : undefined,
+          },
+        });
+
+        existingSkus.add(sku.toLowerCase());
+        created += 1;
+        variantsCreated += variantCreateData.length;
+
+        try {
+          await syncSingleProductToShopify(createdProduct.id, admin.graphql);
+        } catch {
+          syncFailures.push(sku);
+        }
+      }
+
+      const syncNote = syncFailures.length
+        ? ` ${syncFailures.length} product${syncFailures.length === 1 ? "" : "s"} saved but failed Shopify sync — use Sync to Shopify.`
+        : "";
+
+      return {
+        ok: true,
+        message: `Import finished. Created ${created} product${created === 1 ? "" : "s"} (${variantsCreated} variant${variantsCreated === 1 ? "" : "s"}), skipped ${skipped} duplicate/invalid row group${skipped === 1 ? "" : "s"}.${syncNote}`,
+      };
+    }
+
     if (intent !== "create" && intent !== "update") {
       return { ok: false, message: "Unknown action." };
     }
@@ -289,18 +570,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     if (!drafts.length) {
-      return { ok: false, message: "Add at least one colour × purity variant." };
-    }
-
-    if (
-      drafts.some(
-        (draft) => !(Number(draft.grossWeight) > 0) || !draft.metalId || !draft.purityId,
-      )
-    ) {
-      return {
-        ok: false,
-        message: "Each variant needs metal colour, purity, and gross weight (grams).",
-      };
+      const defaultMetal =
+        (await prisma.metalType.findFirst({ where: { status: "Active" } })) ||
+        (await prisma.metalType.findFirst());
+      const defaultPurity = defaultMetal
+        ? await prisma.purityLevel.findFirst({ where: { metalId: defaultMetal.id } })
+        : await prisma.purityLevel.findFirst();
+      if (defaultMetal && defaultPurity) {
+        drafts = [
+          {
+            key: "default-1",
+            metalId: defaultMetal.id,
+            purityId: defaultPurity.id,
+            metalColor: defaultMetal.color || defaultMetal.name,
+            grossWeight: 0,
+            stoneIncluded: false,
+            stoneType: "None",
+            stoneWeight: 0,
+            diamondCategory: "",
+            diamondCount: 1,
+            pricePerCarat: 0,
+            wastagePercent: 5,
+            makingChargeType: "percent",
+            makingChargeValue: 10,
+            stoneRate: 0,
+            status: "Active",
+          },
+        ];
+      }
     }
 
     const existingImages = parseProductImages(
@@ -425,10 +722,62 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     let productId = editingId;
 
     if (intent === "update" && editingId) {
-      const current = await prisma.product.findUnique({ where: { id: editingId } });
+      const current = await prisma.product.findUnique({
+        where: { id: editingId },
+        include: { variants: true },
+      });
       if (!current) return { ok: false, message: "Product not found." };
 
-      await prisma.productVariant.deleteMany({ where: { productId: editingId } });
+      const currentVariantMap = new Map(current.variants.map((v) => [v.id, v]));
+      const keptVariantIds: string[] = [];
+
+      for (let i = 0; i < quotedDrafts.length; i++) {
+        const draft = quotedDrafts[i];
+        const vData = variantCreateData[i];
+        if (draft.id && currentVariantMap.has(draft.id)) {
+          keptVariantIds.push(draft.id);
+          await prisma.productVariant.update({
+            where: { id: draft.id },
+            data: {
+              metalId: vData.metalId,
+              purityId: vData.purityId,
+              metalColor: vData.metalColor,
+              grossWeight: vData.grossWeight,
+              stoneIncluded: vData.stoneIncluded,
+              stoneType: vData.stoneType,
+              stoneWeight: vData.stoneWeight,
+              diamondCategory: vData.diamondCategory,
+              diamondQualityId: vData.diamondQualityId,
+              diamondCount: vData.diamondCount,
+              pricePerCarat: vData.pricePerCarat,
+              wastagePercent: vData.wastagePercent,
+              makingChargeType: vData.makingChargeType,
+              makingChargeValue: vData.makingChargeValue,
+              stoneRate: vData.stoneRate,
+              status: vData.status,
+              ...(vData.imageUrl ? { imageUrl: vData.imageUrl, shopifyFileId: vData.shopifyFileId } : {}),
+            },
+          });
+        } else {
+          const createdV = await prisma.productVariant.create({
+            data: {
+              productId: editingId,
+              ...vData,
+            },
+          });
+          keptVariantIds.push(createdV.id);
+        }
+      }
+
+      if (keptVariantIds.length > 0) {
+        await prisma.productVariant.deleteMany({
+          where: {
+            productId: editingId,
+            id: { notIn: keptVariantIds },
+          },
+        });
+      }
+
       await prisma.product.update({
         where: { id: editingId },
         data: {
@@ -440,7 +789,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           imagesJson,
           gender,
           status,
-          variants: { create: variantCreateData },
           collections: {
             set: collectionIds.map((id) => ({ id })),
           },
@@ -537,6 +885,84 @@ export default function ProductsPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actionData]);
+
+  const exportRows = useMemo((): ProductExportVariant[] => {
+    return catalog.flatMap((product) =>
+      product.variants.map((variant) => ({
+        sku: product.sku,
+        name: product.name,
+        description: product.description,
+        gender: product.gender,
+        collections: product.collection === "—" ? "" : product.collection,
+        status: product.status,
+        metalColor: variant.metalColor,
+        purityLabel: variant.purityLabel || "",
+        grossWeight: variant.grossWeight,
+        wastagePercent: variant.wastagePercent,
+        makingChargeType: variant.makingChargeType,
+        makingChargeValue: variant.makingChargeValue,
+        stoneIncluded: variant.stoneIncluded,
+        stoneType: variant.stoneType,
+        stoneWeight: variant.stoneWeight,
+        stoneRate: variant.stoneRate,
+        diamondCount: variant.diamondCount || 1,
+        diamondQuality: variant.diamondQualityName || "",
+        diamondCut: variant.diamondCategory || "",
+        variantStatus: variant.status,
+      })),
+    );
+  }, [catalog]);
+
+  const excelLookups = useMemo(
+    () => ({
+      metals: metals.map((m) => ({ color: m.color })),
+      purities: purities.map((p) => ({
+        label: p.label,
+        metalColor: p.metal?.color || "",
+      })),
+      collections: collections.map((c) => ({ name: c.name })),
+      diamondQualities: diamondQualities.map((q) => ({ name: q.name })),
+    }),
+    [metals, purities, collections, diamondQualities],
+  );
+
+  const triggerDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadProductExcel = () => {
+    const buffer = buildProductExcel(exportRows, excelLookups);
+    triggerDownload(
+      new Blob([new Uint8Array(buffer)], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      }),
+      "konika-products.xlsx",
+    );
+  };
+
+  const downloadProductCsv = () => {
+    triggerDownload(
+      new Blob([buildProductCsv(exportRows)], { type: "text/csv;charset=utf-8;" }),
+      "konika-products.csv",
+    );
+  };
+
+  const downloadProductTemplate = () => {
+    const buffer = buildProductExcel([], excelLookups);
+    triggerDownload(
+      new Blob([new Uint8Array(buffer)], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      }),
+      "konika-products-template.xlsx",
+    );
+  };
 
   const availablePurities = useMemo(
     () => purities.filter((p) => p.metalId === variantForm.metalId),
@@ -910,7 +1336,21 @@ export default function ProductsPage() {
       }
     }
 
-    if (!list.length) return;
+    if (!list.length) {
+      const draftKey = emptyVariant().key;
+      list.push({
+        ...variantForm,
+        metalId: variantForm.metalId || firstMetal?.id || "",
+        purityId: variantForm.purityId || firstPurity?.id || "",
+        metalColor: variantForm.metalColor || firstMetal?.color || "",
+        grossWeight: Number(variantForm.grossWeight) || 0,
+        stoneRate: quotedStoneRate || 0,
+        pricePerCarat: quotedPricePerCarat || 0,
+        key: draftKey,
+        imagePreview: draftPreview || variantForm.imagePreview || "",
+      });
+      if (draftFile) nextVariantFiles[draftKey] = draftFile;
+    }
 
     fd.set(
       "variantsJson",
@@ -981,9 +1421,17 @@ export default function ProductsPage() {
               View catalog
             </button>
           ) : (
-            <button type="button" className="btn primary" onClick={startCreate}>
-              Add product
-            </button>
+            <>
+              <button type="button" className="btn" onClick={downloadProductTemplate}>
+                Excel template
+              </button>
+              <button type="button" className="btn" onClick={downloadProductExcel}>
+                Export Excel
+              </button>
+              <button type="button" className="btn primary" onClick={startCreate}>
+                Add product
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -1818,6 +2266,45 @@ export default function ProductsPage() {
         </Form>
       ) : (
         <>
+          <div className="panel" style={{ marginBottom: 16 }}>
+            <div className="panel-title">Bulk import / export</div>
+            <p className="hint" style={{ marginTop: 0, marginBottom: 12 }}>
+              Export current products, or download a blank template. Each Excel row is one metal × purity variant.
+              Use the same SKU on multiple rows to add variants under one product. Duplicate SKUs are skipped.
+            </p>
+            <div className="row-actions" style={{ justifyContent: "flex-start", marginBottom: 12 }}>
+              <button type="button" className="btn" onClick={downloadProductTemplate}>
+                Download template
+              </button>
+              <button type="button" className="btn" onClick={downloadProductExcel}>
+                Export Excel
+              </button>
+              <button type="button" className="btn" onClick={downloadProductCsv}>
+                Export CSV
+              </button>
+            </div>
+            <Form method="post" encType="multipart/form-data">
+              <input type="hidden" name="intent" value="import-product-excel" />
+              <div className="field-row">
+                <div className="field" style={{ marginBottom: 0 }}>
+                  <label htmlFor="product-excel-file">Upload filled Excel / CSV</label>
+                  <input
+                    id="product-excel-file"
+                    type="file"
+                    name="excelFile"
+                    accept=".xlsx,.xls,.csv"
+                    required
+                  />
+                </div>
+                <div className="field" style={{ marginBottom: 0, display: "flex", alignItems: "flex-end" }}>
+                  <button className="btn primary" type="submit" disabled={busy}>
+                    {busy ? "Importing…" : "Import products"}
+                  </button>
+                </div>
+              </div>
+            </Form>
+          </div>
+
           <div className="toolbar">
             <div className="search-wrap">
               <label htmlFor="product-search">Search products</label>
