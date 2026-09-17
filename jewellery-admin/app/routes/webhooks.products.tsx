@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
+import { htmlToPlainText, normalizeImageUrl } from "../lib/text";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, topic, payload, admin } = await authenticate.webhook(request);
@@ -63,15 +64,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       gender = "Unisex";
     }
 
-    // 3. Get images details
+    // 3. Get images details (dedupe identical CDN variants)
     const firstImage = payload.images?.[0];
     const imageUrl = firstImage?.src || "";
     const shopifyFileId = firstImage?.admin_graphql_api_id || null;
 
-    const imagesList = (payload.images || []).map((img: any) => ({
-      url: img.src,
-      shopifyFileId: img.admin_graphql_api_id || null,
-    }));
+    const imagesList: Array<{ url: string; shopifyFileId: string | null }> = [];
+    const seenImageUrls = new Set<string>();
+    for (const img of payload.images || []) {
+      const url = String(img?.src || "").trim();
+      if (!url) continue;
+      const key = normalizeImageUrl(url);
+      if (seenImageUrls.has(key)) continue;
+      seenImageUrls.add(key);
+      imagesList.push({
+        url,
+        shopifyFileId: img.admin_graphql_api_id || null,
+      });
+    }
     const imagesJson = JSON.stringify(imagesList);
 
     // 4. Extract candidate SKUs
@@ -129,7 +139,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const productData = {
       sku: product?.sku || sku,
       name: payload.title || "Unnamed Product",
-      description: payload.body_html || "",
+      description: htmlToPlainText(payload.body_html || product?.description || ""),
       imageUrl: imageUrl || product?.imageUrl || "",
       shopifyFileId: shopifyFileId || product?.shopifyFileId || null,
       imagesJson: imagesList.length ? imagesJson : (product?.imagesJson || "[]"),

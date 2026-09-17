@@ -1,4 +1,5 @@
 import { priceToShopifyString, calculateProductPrice, type MakingChargeType } from "./pricing";
+import { htmlToPlainText, normalizeImageUrl } from "./text";
 import prisma from "../db.server";
 
 
@@ -78,7 +79,9 @@ export async function syncCollectionToShopify(
   };
 
   if (description !== undefined) {
-    collectionInput.descriptionHtml = description ? `<p>${escapeHtml(description)}</p>` : "";
+    collectionInput.descriptionHtml = description
+      ? `<p>${escapeHtml(htmlToPlainText(description))}</p>`
+      : "";
   }
 
   if (imageUrl !== undefined) {
@@ -258,6 +261,7 @@ export async function syncProductToShopify(
   // Check if existingProductId exists on Shopify
   let remoteProduct: {
     id: string;
+    mediaUrls: string[];
     variants?: {
       nodes: Array<{
         id: string;
@@ -273,6 +277,11 @@ export async function syncProductToShopify(
       const checkRes = await gql<{
         product: {
           id: string;
+          media: {
+            nodes: Array<{
+              preview?: { image?: { url?: string | null } | null } | null;
+            }>;
+          };
           variants: {
             nodes: Array<{
               id: string;
@@ -288,6 +297,15 @@ export async function syncProductToShopify(
         query checkProduct($id: ID!) {
           product(id: $id) {
             id
+            media(first: 50) {
+              nodes {
+                preview {
+                  image {
+                    url
+                  }
+                }
+              }
+            }
             variants(first: 100) {
               nodes {
                 id
@@ -302,7 +320,12 @@ export async function syncProductToShopify(
         "Check existing product",
       );
       if (checkRes.product?.id) {
-        remoteProduct = checkRes.product;
+        remoteProduct = {
+          ...checkRes.product,
+          mediaUrls: (checkRes.product.media?.nodes || [])
+            .map((node) => node.preview?.image?.url || "")
+            .filter(Boolean),
+        };
       }
     } catch {
       remoteProduct = null;
@@ -314,9 +337,7 @@ export async function syncProductToShopify(
 
   const productPayload: Record<string, unknown> = {
     title: input.title,
-    descriptionHtml: input.description
-      ? `<p>${escapeHtml(input.description)}</p>`
-      : `<p>${escapeHtml(input.title)}</p>`,
+    descriptionHtml: toShopifyDescriptionHtml(input.description, input.title),
     vendor: "Konika Jewellery",
     productType: "Jewellery",
     status: input.status,
@@ -338,7 +359,13 @@ export async function syncProductToShopify(
   ].filter(Boolean);
 
   for (const [index, url] of productImageUrls.entries()) {
-    if (mediaItems.some((m) => m.originalSource === url)) continue;
+    if (
+      mediaItems.some(
+        (m) => normalizeImageUrl(m.originalSource) === normalizeImageUrl(url),
+      )
+    ) {
+      continue;
+    }
     mediaItems.push({
       originalSource: url,
       alt: index === 0 ? input.title : `${input.title} ${index + 1}`,
@@ -348,13 +375,31 @@ export async function syncProductToShopify(
 
   for (const variant of input.variants) {
     if (!variant.imageUrl) continue;
-    if (mediaItems.some((m) => m.originalSource === variant.imageUrl)) continue;
+    if (
+      mediaItems.some(
+        (m) =>
+          normalizeImageUrl(m.originalSource) ===
+          normalizeImageUrl(variant.imageUrl!),
+      )
+    ) {
+      continue;
+    }
     mediaItems.push({
       originalSource: variant.imageUrl,
       alt: `${input.title} ${variant.color || ""} ${variant.purityLabel || ""}`.trim(),
       mediaContentType: "IMAGE",
     });
   }
+
+  // On update, only upload media Shopify does not already have
+  const remoteMediaKeys = new Set(
+    (remoteProduct?.mediaUrls || []).map((url) => normalizeImageUrl(url)),
+  );
+  const mediaItemsToCreate = remoteProduct
+    ? mediaItems.filter(
+        (item) => !remoteMediaKeys.has(normalizeImageUrl(item.originalSource)),
+      )
+    : mediaItems;
 
   if (shopifyProductId && remoteProduct) {
     // 1. UPDATE EXISTING SHOPIFY PRODUCT (NON-DESTRUCTIVE)
@@ -377,7 +422,7 @@ export async function syncProductToShopify(
     );
     assertNoUserErrors(updateRes.productUpdate.userErrors, "Product update");
 
-    if (mediaItems.length) {
+    if (mediaItemsToCreate.length) {
       try {
         await gql(
           graphql,
@@ -388,7 +433,7 @@ export async function syncProductToShopify(
               mediaUserErrors { field message }
             }
           }`,
-          { productId: shopifyProductId, media: mediaItems },
+          { productId: shopifyProductId, media: mediaItemsToCreate },
           "Product media",
         );
       } catch {
@@ -829,6 +874,11 @@ function escapeHtml(value: string) {
     .replace(/"/g, "&quot;");
 }
 
+function toShopifyDescriptionHtml(description: string, fallbackTitle: string) {
+  const plain = htmlToPlainText(description) || htmlToPlainText(fallbackTitle) || fallbackTitle;
+  return `<p>${escapeHtml(plain)}</p>`;
+}
+
 export async function syncAllProductPricesToShopify(graphql: GraphqlClient, goldPricePerGram: number) {
   const products = await prisma.product.findMany({
     include: {
@@ -984,7 +1034,14 @@ export async function syncSingleProductToShopify(
           const urls = Array.isArray(parsed)
             ? parsed.map((item) => item?.url).filter((url): url is string => Boolean(url))
             : [];
-          if (urls.length) return urls;
+          const seen = new Set<string>();
+          const unique = urls.filter((url) => {
+            const key = normalizeImageUrl(url);
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          if (unique.length) return unique;
         } catch {
           // ignore
         }

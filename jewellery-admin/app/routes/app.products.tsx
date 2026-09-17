@@ -36,6 +36,7 @@ import {
 } from "../lib/product-excel";
 import { ALL_COLLECTIONS_NAME } from "../lib/collections";
 import { ensureAllCollectionsCollection } from "../lib/seed.server";
+import { htmlToPlainText, normalizeImageUrl } from "../lib/text";
 
 type VariantDraft = {
   key: string;
@@ -82,18 +83,34 @@ function parseProductImages(
   fallbackUrl = "",
   fallbackFileId: string | null = null,
 ): Array<{ url: string; shopifyFileId: string | null }> {
+  const dedupe = (
+    items: Array<{ url: string; shopifyFileId: string | null }>,
+  ) => {
+    const seen = new Set<string>();
+    const unique: Array<{ url: string; shopifyFileId: string | null }> = [];
+    for (const item of items) {
+      const key = normalizeImageUrl(item.url);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      unique.push(item);
+    }
+    return unique;
+  };
+
   try {
     const parsed = JSON.parse(imagesJson || "[]") as Array<{
       url?: string;
       shopifyFileId?: string | null;
     }>;
     if (Array.isArray(parsed) && parsed.length) {
-      return parsed
-        .filter((item) => item?.url)
-        .map((item) => ({
-          url: String(item.url),
-          shopifyFileId: item.shopifyFileId ?? null,
-        }));
+      return dedupe(
+        parsed
+          .filter((item) => item?.url)
+          .map((item) => ({
+            url: String(item.url),
+            shopifyFileId: item.shopifyFileId ?? null,
+          })),
+      );
     }
   } catch {
     // ignore invalid json
@@ -228,7 +245,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       id: product.id,
       sku: product.sku,
       name: product.name,
-      description: product.description,
+      description: htmlToPlainText(product.description),
       imageUrl: product.imageUrl,
       shopifyFileId: product.shopifyFileId,
       images: parseProductImages(
@@ -557,7 +574,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const sku = String(form.get("sku") || "").trim();
     const name = String(form.get("name") || "").trim();
-    const description = String(form.get("description") || "").trim();
+    const description = htmlToPlainText(String(form.get("description") || "").trim());
     const gender = String(form.get("gender") || "Unisex");
     const collectionIds = form.getAll("collectionIds").map(String);
     const status = String(form.get("status") || "Active");
@@ -617,6 +634,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const productImages: Array<{ url: string; shopifyFileId: string | null }> = [
       ...existingImages,
     ];
+    const seenUploadUrls = new Set(
+      productImages.map((image) => normalizeImageUrl(image.url)).filter(Boolean),
+    );
 
     const productImageKeys = [...form.keys()].filter((key) =>
       String(key).startsWith("productImage_"),
@@ -630,6 +650,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         };
       }
       const uploaded = await uploadImageToShopifyFiles(admin.graphql, file, name);
+      const uploadedKey = normalizeImageUrl(uploaded.url);
+      if (uploadedKey && seenUploadUrls.has(uploadedKey)) continue;
+      if (uploadedKey) seenUploadUrls.add(uploadedKey);
       productImages.push({
         url: uploaded.url,
         shopifyFileId: uploaded.fileId,
@@ -864,6 +887,7 @@ export default function ProductsPage() {
   const busy = navigation.state !== "idle";
   const view = searchParams.get("view") === "catalog" ? "catalog" : "edit";
   const showForm = view === "edit";
+  const editIdFromUrl = searchParams.get("id");
 
   const firstMetal = metals[0];
   const firstPurity =
@@ -887,10 +911,12 @@ export default function ProductsPage() {
   const productImageInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedCollections, setSelectedCollections] = useState<Array<{ id: string; name: string }>>([]);
   const [collectionSelectVal, setCollectionSelectVal] = useState("");
+  const hydratedEditIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (actionData && "clearEdit" in actionData && actionData.clearEdit && actionData.ok) {
       resetForm();
+      hydratedEditIdRef.current = null;
       setSearchParams({ view: "catalog" });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1147,6 +1173,7 @@ export default function ProductsPage() {
 
   const startCreate = () => {
     resetForm();
+    hydratedEditIdRef.current = null;
     setSearchParams({ view: "edit" });
   };
 
@@ -1155,11 +1182,12 @@ export default function ProductsPage() {
     if (!product) return;
 
     setEditingId(product.id);
+    hydratedEditIdRef.current = product.id;
     setEditingVariantKey(null);
     setProductForm({
       sku: product.sku,
       name: product.name,
-      description: product.description,
+      description: htmlToPlainText(product.description),
       gender: product.gender,
       collectionIds: product.collectionIds,
       status: product.status,
@@ -1183,7 +1211,7 @@ export default function ProductsPage() {
     setCollectionSelectVal("");
     setProductImages(
       product.images.map((image, index) => ({
-        key: `saved-${index}-${image.url.slice(-12)}`,
+        key: `saved-${index}-${normalizeImageUrl(image.url).slice(-18) || index}`,
         url: image.url,
         shopifyFileId: image.shopifyFileId,
         preview: image.url,
@@ -1238,8 +1266,17 @@ export default function ProductsPage() {
       );
       setDraftPreview("");
     }
-    setSearchParams({ view: "edit" });
+    setSearchParams({ view: "edit", id: product.id });
   };
+
+  // Open edit form when arriving from dashboard (or deep link) with ?id=
+  useEffect(() => {
+    if (view !== "edit" || !editIdFromUrl) return;
+    if (hydratedEditIdRef.current === editIdFromUrl && editingId === editIdFromUrl) return;
+    if (!catalog.some((p) => p.id === editIdFromUrl)) return;
+    startEdit(editIdFromUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, editIdFromUrl, catalog]);
 
   const startEditVariant = (variant: VariantDraft) => {
     setEditingVariantKey(variant.key);
@@ -1467,6 +1504,7 @@ export default function ProductsPage() {
               className="btn"
               onClick={() => {
                 resetForm();
+                hydratedEditIdRef.current = null;
                 setSearchParams({ view: "catalog" });
               }}
             >
@@ -2453,25 +2491,22 @@ export default function ProductsPage() {
                         </span>
                       </td>
                       <td>
-                        <details className="action-menu">
-                          <summary>Actions</summary>
-                          <div className="action-pop">
-                            <button
-                              type="button"
-                              className="btn small"
-                              onClick={() => startEdit(product.id)}
-                            >
-                              Edit
+                        <div className="row-actions" style={{ justifyContent: "flex-end" }}>
+                          <button
+                            type="button"
+                            className="btn small"
+                            onClick={() => startEdit(product.id)}
+                          >
+                            Edit
+                          </button>
+                          <Form method="post">
+                            <input type="hidden" name="intent" value="delete" />
+                            <input type="hidden" name="id" value={product.id} />
+                            <button className="btn small danger" type="submit" disabled={busy}>
+                              Delete
                             </button>
-                            <Form method="post">
-                              <input type="hidden" name="intent" value="delete" />
-                              <input type="hidden" name="id" value={product.id} />
-                              <button className="btn small danger" type="submit" disabled={busy}>
-                                Delete
-                              </button>
-                            </Form>
-                          </div>
-                        </details>
+                          </Form>
+                        </div>
                       </td>
                     </tr>
                   ))}
