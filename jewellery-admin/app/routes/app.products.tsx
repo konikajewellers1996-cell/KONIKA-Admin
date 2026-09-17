@@ -121,6 +121,20 @@ function parseProductImages(
   return [];
 }
 
+function dedupeProductImageItems(items: ProductImageItem[]): ProductImageItem[] {
+  const seen = new Set<string>();
+  const unique: ProductImageItem[] = [];
+  for (const item of items) {
+    const key = item.url
+      ? normalizeImageUrl(item.url)
+      : `preview:${item.preview || item.key}`;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique;
+}
+
 const emptyVariant = (metalId = "", purityId = "", metalColor = ""): VariantDraft => ({
   key: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
   metalId,
@@ -911,6 +925,8 @@ export default function ProductsPage() {
   const productImageInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedCollections, setSelectedCollections] = useState<Array<{ id: string; name: string }>>([]);
   const [collectionSelectVal, setCollectionSelectVal] = useState("");
+  const [enableVariants, setEnableVariants] = useState(false);
+  const [dragImageKey, setDragImageKey] = useState<string | null>(null);
   const hydratedEditIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -1136,6 +1152,8 @@ export default function ProductsPage() {
   function resetForm() {
     setEditingId(null);
     setEditingVariantKey(null);
+    setEnableVariants(false);
+    setDragImageKey(null);
     setProductForm(emptyProductForm());
     setSelectedCollections(
       allCollectionsEntry
@@ -1209,13 +1227,17 @@ export default function ProductsPage() {
     }
     setSelectedCollections(selectedColls);
     setCollectionSelectVal("");
+    setEnableVariants(product.variants.length > 1);
+    setDragImageKey(null);
     setProductImages(
-      product.images.map((image, index) => ({
-        key: `saved-${index}-${normalizeImageUrl(image.url).slice(-18) || index}`,
-        url: image.url,
-        shopifyFileId: image.shopifyFileId,
-        preview: image.url,
-      })),
+      dedupeProductImageItems(
+        product.images.map((image, index) => ({
+          key: `saved-${normalizeImageUrl(image.url) || index}`,
+          url: image.url,
+          shopifyFileId: image.shopifyFileId,
+          preview: image.url,
+        })),
+      ),
     );
     setProductFileMap({});
     setVariantFileMap({});
@@ -1270,13 +1292,39 @@ export default function ProductsPage() {
   };
 
   // Open edit form when arriving from dashboard (or deep link) with ?id=
+  // Hydrate once per product id — never re-run on catalog refreshes or local form edits
+  // (re-running was duplicating images when collections were changed).
   useEffect(() => {
     if (view !== "edit" || !editIdFromUrl) return;
-    if (hydratedEditIdRef.current === editIdFromUrl && editingId === editIdFromUrl) return;
+    if (hydratedEditIdRef.current === editIdFromUrl) return;
     if (!catalog.some((p) => p.id === editIdFromUrl)) return;
     startEdit(editIdFromUrl);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, editIdFromUrl, catalog]);
+
+  const reorderProductImages = (fromKey: string, toKey: string) => {
+    if (!fromKey || !toKey || fromKey === toKey) return;
+    setProductImages((current) => {
+      const fromIndex = current.findIndex((item) => item.key === fromKey);
+      const toIndex = current.findIndex((item) => item.key === toKey);
+      if (fromIndex < 0 || toIndex < 0) return current;
+      const next = [...current];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  };
+
+  const makePrimaryImage = (key: string) => {
+    setProductImages((current) => {
+      const index = current.findIndex((item) => item.key === key);
+      if (index <= 0) return current;
+      const next = [...current];
+      const [moved] = next.splice(index, 1);
+      next.unshift(moved);
+      return next;
+    });
+  };
 
   const startEditVariant = (variant: VariantDraft) => {
     setEditingVariantKey(variant.key);
@@ -1368,7 +1416,7 @@ export default function ProductsPage() {
     fd.set("intent", editingId ? "update" : "create");
     if (editingId) fd.set("productId", editingId);
 
-    const keptImages = productImages
+    const keptImages = dedupeProductImageItems(productImages)
       .filter((image) => image.url)
       .map((image) => ({
         url: image.url,
@@ -1380,7 +1428,25 @@ export default function ProductsPage() {
 
     // Commit any in-progress variant edit before save.
     let list = [...variants];
-    if (editingVariantKey) {
+    if (!enableVariants) {
+      // Direct product: persist only the current metal/pricing form as a single entry
+      if (!(Number(variantForm.grossWeight) > 0)) return;
+      if (variantForm.stoneIncluded && variantForm.stoneType === "Diamond" && !diamondQuote.ok) return;
+      const directKey = editingVariantKey || variants[0]?.key || emptyVariant().key;
+      list = [
+        {
+          ...variantForm,
+          stoneRate: quotedStoneRate,
+          pricePerCarat: quotedPricePerCarat,
+          key: directKey,
+          id: variants[0]?.id || variantForm.id,
+          imagePreview: draftPreview || variantForm.imagePreview || variants[0]?.existingImageUrl || "",
+          existingImageUrl: variants[0]?.existingImageUrl || variantForm.existingImageUrl || "",
+          existingFileId: variants[0]?.existingFileId ?? variantForm.existingFileId ?? null,
+        },
+      ];
+      if (draftFile) nextVariantFiles[directKey] = draftFile;
+    } else if (editingVariantKey) {
       if (!(Number(variantForm.grossWeight) > 0)) return;
       if (variantForm.stoneIncluded && variantForm.stoneType === "Diamond" && !diamondQuote.ok) return;
       if (draftFile) nextVariantFiles[editingVariantKey] = draftFile;
@@ -1448,7 +1514,8 @@ export default function ProductsPage() {
 
     let newImageIndex = 0;
     let attachedProductFiles = 0;
-    productImages.forEach((image) => {
+    const orderedImages = dedupeProductImageItems(productImages);
+    orderedImages.forEach((image) => {
       const file = productFileMap[image.key];
       if (file) {
         fd.set(`productImage_${newImageIndex}`, file);
@@ -1466,7 +1533,7 @@ export default function ProductsPage() {
       }
     });
 
-    const pendingProductPreviews = productImages.filter((image) => !image.url).length;
+    const pendingProductPreviews = orderedImages.filter((image) => !image.url).length;
     if (pendingProductPreviews > 0 && attachedProductFiles === 0) {
       window.alert("Product images were selected but not attached. Please re-select the images and save again.");
       return;
@@ -1616,23 +1683,51 @@ export default function ProductsPage() {
                         });
                       });
                       setProductFileMap((current) => ({ ...current, ...fileEntries }));
-                      setProductImages((current) => [...current, ...additions]);
+                      setProductImages((current) =>
+                        dedupeProductImageItems([...current, ...additions]),
+                      );
                       event.target.value = "";
                     }}
                   />
                   <div className="hint">
-                    Add several product photos. First image is used as the catalog thumbnail.
+                    Drag images to reorder. The first image is Primary (catalog thumbnail). Use Set primary on any photo.
                   </div>
                   {productImages.length ? (
                     <div className="upload-gallery">
-                      {productImages.map((image, index) => (
-                        <div key={image.key} className="upload-gallery-item">
+                      {dedupeProductImageItems(productImages).map((image, index) => (
+                        <div
+                          key={image.key}
+                          className={`upload-gallery-item${dragImageKey === image.key ? " dragging" : ""}`}
+                          draggable
+                          onDragStart={() => setDragImageKey(image.key)}
+                          onDragOver={(event) => {
+                            event.preventDefault();
+                          }}
+                          onDrop={(event) => {
+                            event.preventDefault();
+                            if (dragImageKey) reorderProductImages(dragImageKey, image.key);
+                            setDragImageKey(null);
+                          }}
+                          onDragEnd={() => setDragImageKey(null)}
+                        >
+                          <div className="upload-drag-handle" title="Drag to reorder">
+                            ⋮⋮
+                          </div>
                           <img src={image.preview} alt={`Product ${index + 1}`} />
                           {index === 0 ? (
                             <div className="hint" style={{ marginTop: 4 }}>
                               Primary
                             </div>
-                          ) : null}
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn small"
+                              style={{ marginTop: 4 }}
+                              onClick={() => makePrimaryImage(image.key)}
+                            >
+                              Set primary
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="btn small danger"
@@ -1670,6 +1765,8 @@ export default function ProductsPage() {
                           ? prev
                           : [...prev, { id: coll.id, name: coll.name }],
                       );
+                      // Selecting collections must never remount / rehydrate product images
+                      setProductImages((current) => dedupeProductImageItems(current));
                     }}
                   >
                     <option value="">Select a collection to add…</option>
@@ -1749,9 +1846,53 @@ export default function ProductsPage() {
 
               <div className="panel">
                 <div className="panel-title">
-                  {editingVariantKey ? "Edit colour × purity variant" : "Colour × purity variant"}
+                  {enableVariants
+                    ? editingVariantKey
+                      ? "Edit colour × purity variant"
+                      : "Colour × purity variants"
+                    : "Product metal & pricing"}
                 </div>
-                {editingVariantKey ? (
+                <label
+                  className="field"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    marginBottom: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={enableVariants}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setEnableVariants(checked);
+                      if (!checked) {
+                        // Collapse to a single direct product from the current form / first variant
+                        setEditingVariantKey(null);
+                        if (variants[0]) {
+                          setVariantForm({
+                            ...variants[0],
+                            imagePreview:
+                              variants[0].imagePreview || variants[0].existingImageUrl || "",
+                          });
+                          setDraftPreview(
+                            variants[0].imagePreview || variants[0].existingImageUrl || "",
+                          );
+                        }
+                        setVariants((current) => (current[0] ? [current[0]] : []));
+                      }
+                    }}
+                  />
+                  <span>
+                    <strong>Enable colour × purity variants</strong>
+                    <div className="hint" style={{ marginTop: 2 }}>
+                      Unticked: save as a direct single product. Ticked: add multiple metal/purity variants.
+                    </div>
+                  </span>
+                </label>
+                {enableVariants && editingVariantKey ? (
                   <div className="hint" style={{ marginBottom: 12 }}>
                     Editing a listed variant — update fields, then click{" "}
                     <strong>Update variant</strong>.
@@ -2127,27 +2268,33 @@ export default function ProductsPage() {
                   </div>
                 </div>
 
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
-                  <button
-                    type="button"
-                    className="btn primary"
-                    onClick={saveVariantToList}
-                    disabled={
-                      variantForm.stoneIncluded &&
-                      variantForm.stoneType === "Diamond" &&
-                      !diamondQuote.ok
-                    }
-                  >
-                    {editingVariantKey ? "Update variant" : "Add this variant to list"}
-                  </button>
-                  {editingVariantKey ? (
-                    <button type="button" className="btn" onClick={() => clearVariantEditor(true)}>
-                      Cancel variant edit
+                {enableVariants ? (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                    <button
+                      type="button"
+                      className="btn primary"
+                      onClick={saveVariantToList}
+                      disabled={
+                        variantForm.stoneIncluded &&
+                        variantForm.stoneType === "Diamond" &&
+                        !diamondQuote.ok
+                      }
+                    >
+                      {editingVariantKey ? "Update variant" : "Add this variant to list"}
                     </button>
-                  ) : null}
-                </div>
+                    {editingVariantKey ? (
+                      <button type="button" className="btn" onClick={() => clearVariantEditor(true)}>
+                        Cancel variant edit
+                      </button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="hint" style={{ marginTop: 8 }}>
+                    This product will be saved as a single direct item (no variant list).
+                  </div>
+                )}
 
-                {variantsForSave.length > 0 ? (
+                {enableVariants && variantsForSave.length > 0 ? (
                   <div className="variant-list">
                     {variantsForSave.map((variant) => {
                       const purity = purities.find((p) => p.id === variant.purityId);
@@ -2346,7 +2493,15 @@ export default function ProductsPage() {
                   className="btn primary"
                   style={{ flex: 1, justifyContent: "center" }}
                   type="submit"
-                  disabled={busy || variantsForSave.length === 0}
+                  disabled={
+                    busy ||
+                    (enableVariants
+                      ? variantsForSave.length === 0
+                      : !(Number(variantForm.grossWeight) > 0) ||
+                        (variantForm.stoneIncluded &&
+                          variantForm.stoneType === "Diamond" &&
+                          !diamondQuote.ok))
+                  }
                 >
                   {busy
                     ? "Saving…"
