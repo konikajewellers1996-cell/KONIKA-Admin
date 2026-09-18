@@ -1,6 +1,7 @@
 import { priceToShopifyString, calculateProductPrice, type MakingChargeType } from "./pricing";
 import { htmlToPlainText, normalizeImageUrl } from "./text";
 import { syncProductJewelleryMetafields } from "./shopify-metafields.server";
+import { parseSizeWeights, unionSizes } from "./size-weights";
 import { parseStonesJson } from "./stones";
 import {
   mergedDiscountLines,
@@ -37,14 +38,22 @@ type GraphqlClient = (
 type SyncVariantInput = {
   id: string;
   skuSuffix: string;
+  sku?: string;
   color: string;
   purityLabel: string;
   price: number;
   grossWeight?: number;
+  netGoldWeight?: number;
   shopifyVariantId?: string | null;
   status: string;
   imageUrl?: string;
   size?: string;
+  sizeWeights?: Array<{
+    size: string;
+    netGoldWeight: number;
+    grossWeight: number;
+    price: number;
+  }>;
 };
 
 type SyncProductInput = {
@@ -63,27 +72,115 @@ function optionIsSize(name: string) {
   return /size/i.test(name.trim());
 }
 
+function priceForMetal(args: {
+  variant: {
+    grossWeight: number;
+    netGoldWeight: number | null;
+    stoneWeight: number;
+    stoneIncluded: boolean;
+    stoneType: string | null;
+    wastagePercent: number;
+    makingChargeType: string;
+    makingChargeValue: number;
+    stoneRate: number;
+    stonesJson: string | null;
+    otherCharges: number;
+    gstPercent: number;
+    manualPrice: number | null;
+    wastageType: string;
+    purity?: { purityValue: number; label: string } | null;
+    metalColor: string;
+    id: string;
+    shopifyVariantId: string | null;
+    imageUrl: string | null;
+    status: string;
+    sku?: string | null;
+    sizeWeightsJson?: string | null;
+  };
+  product: {
+    id: string;
+    sku: string;
+    isRing: boolean;
+    pricingMode: string;
+    discountsJson: string | null;
+    collections: Array<{ id: string }>;
+  };
+  goldPricePerGram: number;
+  rules: CatalogDiscountRule[];
+  netGoldWeight: number;
+  grossWeight: number;
+}) {
+  return calculateProductPrice({
+    grossWeight: args.grossWeight,
+    netGoldWeight: args.netGoldWeight,
+    stoneWeight: args.variant.stoneWeight,
+    stoneIncluded: args.variant.stoneIncluded,
+    stoneType: args.variant.stoneType || undefined,
+    wastagePercent: args.variant.wastagePercent,
+    makingChargeType: args.variant.makingChargeType as MakingChargeType,
+    makingChargeValue: args.variant.makingChargeValue,
+    stoneRate: args.variant.stoneRate,
+    goldPricePerGram: args.variant.purity
+      ? (args.goldPricePerGram / 0.916) * args.variant.purity.purityValue
+      : args.goldPricePerGram,
+    stones: parseStonesJson(args.variant.stonesJson, {
+      stoneIncluded: args.variant.stoneIncluded,
+      stoneType: args.variant.stoneType || undefined,
+      stoneWeight: args.variant.stoneWeight,
+      stoneRate: args.variant.stoneRate,
+    }),
+    otherCharges: args.variant.otherCharges,
+    gstPercent: args.variant.gstPercent,
+    pricingMode: args.product.pricingMode,
+    manualPrice: args.variant.manualPrice ?? undefined,
+    wastageType: args.variant.wastageType,
+    discounts: mergedDiscountLines(
+      parseDiscountLines(args.product.discountsJson),
+      args.rules,
+      args.product.id,
+      args.product.collections.map((item) => item.id),
+    ),
+  }).total;
+}
+
 type WorkVariant = SyncVariantInput & { originId: string };
 
 function expandShopifyVariants(input: SyncProductInput): {
   rows: WorkVariant[];
   sizes: string[];
 } {
-  const sizes = [...new Set((input.sizes || []).map((item) => String(item).trim()).filter(Boolean))];
-  const base = input.variants.map((variant) => ({ ...variant, originId: variant.id }));
-  if (!sizes.length) return { rows: base, sizes: [] };
-  if (base.length * sizes.length > 100) return { rows: base, sizes: [] };
   const rows: WorkVariant[] = [];
-  for (const variant of base) {
-    for (const size of sizes) {
+  for (const variant of input.variants) {
+    const weights = (variant.sizeWeights || []).filter((row) => String(row.size || "").trim());
+    if (!weights.length) {
       rows.push({
         ...variant,
+        originId: variant.id,
+        skuSuffix: (variant.sku || variant.skuSuffix || "").replace(/\s+/g, ""),
+      });
+      continue;
+    }
+    for (const row of weights) {
+      const size = String(row.size).trim();
+      const baseSku = (variant.sku || variant.skuSuffix || input.sku || "").replace(/\s+/g, "");
+      rows.push({
+        ...variant,
+        originId: variant.id,
         size,
-        skuSuffix: `${variant.skuSuffix}-SZ${size}`.replace(/\s+/g, ""),
+        grossWeight: row.grossWeight,
+        netGoldWeight: row.netGoldWeight,
+        price: row.price,
+        skuSuffix: `${baseSku}-SZ${size}`.replace(/\s+/g, ""),
       });
     }
   }
-  return { rows, sizes };
+  if (rows.length > 100) {
+    rows.splice(100);
+  }
+  return {
+    rows,
+    sizes: [...new Set(rows.map((row) => String(row.size || "").trim()).filter(Boolean))],
+  };
 }
 
 async function gql<T = Record<string, unknown>>(
@@ -814,7 +911,7 @@ export async function syncProductToShopify(
           optionValues.push({ optionName: sizeOptionName, name: local.size });
         }
 
-        const invSku = `${input.sku}${local.skuSuffix ? `-${local.skuSuffix}` : ""}`.slice(0, 100);
+        const invSku = (local.skuSuffix || input.sku || "").slice(0, 100);
 
         if (matched) {
           matchedRemoteIds.add(matched.id);
@@ -1014,7 +1111,7 @@ export async function syncProductToShopify(
                 id: defaultVariants[0].id,
                 price: priceToShopifyString(firstVar.price),
                 inventoryItem: {
-                  sku: `${input.sku}${firstVar.skuSuffix ? `-${firstVar.skuSuffix}` : ""}`.slice(0, 100),
+                  sku: (firstVar.skuSuffix || input.sku).slice(0, 100),
                   ...(Number(firstVar.grossWeight) > 0
                     ? { measurement: { weight: { unit: "GRAMS", value: Number(firstVar.grossWeight) } } }
                     : {}),
@@ -1045,7 +1142,7 @@ export async function syncProductToShopify(
           price: priceToShopifyString(variant.price),
           optionValues,
           inventoryItem: {
-            sku: `${input.sku}-${variant.skuSuffix}`.slice(0, 100),
+            sku: (variant.skuSuffix || input.sku).slice(0, 100),
             ...(Number(variant.grossWeight) > 0
               ? { measurement: { weight: { unit: "GRAMS", value: Number(variant.grossWeight) } } }
               : {}),
@@ -1388,51 +1485,50 @@ export async function syncSingleProductToShopify(
         }
         return product.imageUrl ? [product.imageUrl] : [];
       })(),
-      variants: product.variants.map((variant) => ({
-        id: variant.id,
-        shopifyVariantId: variant.shopifyVariantId,
-        skuSuffix: `${variant.metalColor.replace(/\s+/g, "")}-${variant.purity?.label || "22K"}`,
-        color: variant.metalColor,
-        purityLabel: variant.purity?.label || "22K",
-        imageUrl: variant.imageUrl || undefined,
-        grossWeight: variant.grossWeight,
-        price: calculateProductPrice({
+      variants: product.variants.map((variant) => {
+        const sizeWeights = product.isRing
+          ? parseSizeWeights(variant.sizeWeightsJson).map((row) => ({
+              size: row.size,
+              netGoldWeight: row.netGoldWeight,
+              grossWeight: row.grossWeight,
+              price: priceForMetal({
+                variant,
+                product,
+                goldPricePerGram,
+                rules,
+                netGoldWeight: row.netGoldWeight,
+                grossWeight: row.grossWeight,
+              }),
+            }))
+          : [];
+        return {
+          id: variant.id,
+          shopifyVariantId: variant.shopifyVariantId,
+          sku: variant.sku || product.sku,
+          skuSuffix: variant.sku || product.sku,
+          color: variant.metalColor,
+          purityLabel: variant.purity?.label || "22K",
+          imageUrl: variant.imageUrl || undefined,
           grossWeight: variant.grossWeight,
-          netGoldWeight: variant.netGoldWeight,
-          stoneWeight: variant.stoneWeight,
-          stoneIncluded: variant.stoneIncluded,
-          stoneType: variant.stoneType,
-          wastagePercent: variant.wastagePercent,
-          makingChargeType: variant.makingChargeType as MakingChargeType,
-          makingChargeValue: variant.makingChargeValue,
-          stoneRate: variant.stoneRate,
-          goldPricePerGram: variant.purity
-            ? (goldPricePerGram / 0.916) * variant.purity.purityValue
-            : goldPricePerGram,
-          stones: parseStonesJson(variant.stonesJson, variant),
-          otherCharges: variant.otherCharges,
-          gstPercent: variant.gstPercent,
-          pricingMode: product.pricingMode,
-          manualPrice: variant.manualPrice,
-          wastageType: variant.wastageType,
-          discounts: mergedDiscountLines(
-            parseDiscountLines(product.discountsJson),
+          netGoldWeight: variant.netGoldWeight ?? undefined,
+          sizeWeights,
+          price: priceForMetal({
+            variant,
+            product,
+            goldPricePerGram,
             rules,
-            product.id,
-            product.collections.map((item) => item.id),
-          ),
-        }).total,
-        status: variant.status,
-      })),
+            netGoldWeight: variant.netGoldWeight ?? 0,
+            grossWeight: variant.grossWeight,
+          }),
+          status: variant.status,
+        };
+      }),
       sizes: product.isRing
-        ? (() => {
-            try {
-              const parsed = JSON.parse(product.availableSizes || "[]");
-              return Array.isArray(parsed) ? parsed.map(String) : [];
-            } catch {
-              return [];
-            }
-          })()
+        ? unionSizes(
+            product.variants.map((variant) => ({
+              sizeWeights: parseSizeWeights(variant.sizeWeightsJson),
+            })),
+          )
         : [],
     },
     product.shopifyProductId,

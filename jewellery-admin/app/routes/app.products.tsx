@@ -69,10 +69,18 @@ import {
   stoneWeightInGrams,
   type StoneLine,
 } from "../lib/stones";
+import {
+  emptySizeRow,
+  parseSizeWeights,
+  serializeSizeWeights,
+  unionSizes,
+  type SizeWeightRow,
+} from "../lib/size-weights";
 
 type VariantDraft = {
   key: string;
   id?: string;
+  sku: string;
   metalId: string;
   purityId: string;
   metalColor: string;
@@ -94,6 +102,7 @@ type VariantDraft = {
   manualPrice: number;
   stoneRate: number;
   stones: StoneLine[];
+  sizeWeights: SizeWeightRow[];
   status: "Active" | "Draft";
   imagePreview?: string;
   existingImageUrl?: string;
@@ -134,9 +143,15 @@ function parseAvailableSizes(value: string | null | undefined): string[] {
   }
 }
 
-function looksLikeRing(name: string, collections: Array<{ name: string }>) {
-  if (/ring/i.test(name)) return true;
-  return collections.some((item) => /ring/i.test(item.name));
+function hasVariantGoldWeight(variant: {
+  netGoldWeight?: number;
+  grossWeight?: number;
+  sizeWeights?: SizeWeightRow[];
+}) {
+  if (Number(variant.netGoldWeight) > 0 || Number(variant.grossWeight) > 0) return true;
+  return (variant.sizeWeights || []).some(
+    (row) => Number(row.netGoldWeight) > 0 || Number(row.grossWeight) > 0,
+  );
 }
 
 function stoneGramsOnVariant(variant: { stoneIncluded?: boolean; stones?: StoneLine[] }) {
@@ -285,6 +300,7 @@ function dedupeProductImageItems(items: ProductImageItem[]): ProductImageItem[] 
 
 const emptyVariant = (metalId = "", purityId = "", metalColor = ""): VariantDraft => ({
   key: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+  sku: "",
   metalId,
   purityId,
   metalColor,
@@ -306,6 +322,7 @@ const emptyVariant = (metalId = "", purityId = "", metalColor = ""): VariantDraf
   manualPrice: 0,
   stoneRate: 0,
   stones: [],
+  sizeWeights: [],
   status: "Active",
   imagePreview: "",
   existingImageUrl: "",
@@ -423,22 +440,38 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       product.id,
       product.collections.map((item) => item.id),
     );
-    const prices = product.variants.map((variant) =>
-      calculateProductPrice(
-        variantPriceInput(
-          {
-            ...variant,
-            makingChargeType: variant.makingChargeType,
-            stones: parseStonesJson(variant.stonesJson, variant),
-          },
-          variant.purity
-            ? (goldPricePerGram / 0.916) * variant.purity.purityValue
-            : goldPricePerGram,
-          product.pricingMode,
-          productDiscounts,
-        ),
-      ).total,
-    );
+    const prices = product.variants.flatMap((variant) => {
+      const stones = parseStonesJson(variant.stonesJson, variant);
+      const sizeRows = product.isRing ? parseSizeWeights(variant.sizeWeightsJson) : [];
+      const combos = sizeRows.length
+        ? sizeRows
+        : [
+            {
+              size: "",
+              netGoldWeight: Number(variant.netGoldWeight) || 0,
+              grossWeight: Number(variant.grossWeight) || 0,
+            },
+          ];
+      return combos.map(
+        (row) =>
+          calculateProductPrice(
+            variantPriceInput(
+              {
+                ...variant,
+                makingChargeType: variant.makingChargeType,
+                netGoldWeight: row.netGoldWeight,
+                grossWeight: row.grossWeight,
+                stones,
+              },
+              variant.purity
+                ? (goldPricePerGram / 0.916) * variant.purity.purityValue
+                : goldPricePerGram,
+              product.pricingMode,
+              productDiscounts,
+            ),
+          ).total,
+      );
+    });
 
     return {
       id: product.id,
@@ -473,6 +506,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         .toUpperCase(),
       variants: product.variants.map((variant) => ({
         id: variant.id,
+        sku: variant.sku || product.sku,
         metalId: variant.metalId,
         purityId: variant.purityId,
         metalColor: variant.metalColor,
@@ -500,6 +534,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         purityLabel: variant.purity?.label || "",
         label: `${variant.metalColor} · ${variant.purity?.label || "22K"}`,
         stones: parseStonesJson(variant.stonesJson, variant),
+        sizeWeights: parseSizeWeights(variant.sizeWeightsJson),
         price: calculateProductPrice(
           variantPriceInput(
             {
@@ -607,6 +642,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           metalId: string;
           purityId: string;
           metalColor: string;
+          sku?: string;
+          sizeWeightsJson?: string;
           grossWeight: number;
           netGoldWeight?: number;
           stoneIncluded: boolean;
@@ -714,6 +751,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             metalId: metal.id,
             purityId: purity.id,
             metalColor: metal.color,
+            sku: String(row.sku || first.sku || "").trim(),
+            sizeWeightsJson: "[]",
             grossWeight: Number(row.grossWeight) || 0,
             stoneIncluded,
             stoneType,
@@ -793,7 +832,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { ok: false, message: "Missing product id for update." };
     }
 
-    const sku =
+    let sku =
       String(form.get("sku") || "").trim() ||
       (isAutosave ? `DRAFT-${Date.now().toString().slice(-8)}` : "");
     const name =
@@ -813,18 +852,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       availableSizes = [];
     }
     const isRing = String(form.get("isRing") || "") === "true";
-    const availableSizesJson = JSON.stringify(isRing ? availableSizes : []);
     const collectionIds = form.getAll("collectionIds").map(String);
     const status = isAutosave ? "Draft" : String(form.get("status") || "Active");
     const pricingMode = normalizePricingMode(String(form.get("pricingMode") || "auto"));
     const discountsJson = serializeDiscountLines(parseDiscountLines(String(form.get("discountsJson") || "[]")));
     const variantsRaw = String(form.get("variantsJson") || "[]");
 
-    if (!isAutosave && (!sku || !name)) {
-      return { ok: false, message: "SKU and product name are required." };
-    }
-    if (!isAutosave && isRing && !availableSizes.length) {
-      return { ok: false, message: "This is a ring — select at least one size variant." };
+    if (!isAutosave && !name) {
+      return { ok: false, message: "Product name is required." };
     }
 
     const allCollections = await ensureAllCollectionsCollection();
@@ -853,6 +888,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             metalId: defaultMetal.id,
             purityId: defaultPurity.id,
             metalColor: defaultMetal.color || defaultMetal.name,
+            sku: sku || `DRAFT-${Date.now().toString().slice(-8)}`,
             grossWeight: 0,
             netGoldWeight: 0,
             stoneIncluded: false,
@@ -870,6 +906,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             manualPrice: 0,
             stoneRate: 0,
             stones: [],
+            sizeWeights: [],
             status: "Active",
           },
         ];
@@ -986,16 +1023,65 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           ...draft,
           ...legacy,
           stones: quotedStones,
+          sku: String(draft.sku || "").trim(),
+          sizeWeights: Array.isArray(draft.sizeWeights)
+            ? draft.sizeWeights
+            : parseSizeWeights(JSON.stringify(draft.sizeWeights || [])),
         }),
       );
     }
 
-    const variantCreateData = quotedDrafts.map((draft, index) => ({
+    if (!isAutosave) {
+      for (const draft of quotedDrafts) {
+        if (!String(draft.sku || "").trim()) {
+          return { ok: false, message: "Each colour × purity variant needs its own SKU." };
+        }
+      }
+      const seenVariantSkus = new Set<string>();
+      for (const draft of quotedDrafts) {
+        const key = String(draft.sku).trim().toLowerCase();
+        if (seenVariantSkus.has(key)) {
+          return { ok: false, message: `Duplicate variant SKU: ${draft.sku}` };
+        }
+        seenVariantSkus.add(key);
+      }
+      if (isRing) {
+        for (const draft of quotedDrafts) {
+          const rows = parseSizeWeights(serializeSizeWeights(draft.sizeWeights || []));
+          if (!rows.length) {
+            return {
+              ok: false,
+              message: `Add at least one size with weight for ${draft.metalColor}.`,
+            };
+          }
+        }
+      }
+    }
+
+    sku =
+      String(quotedDrafts[0]?.sku || "").trim() ||
+      sku ||
+      (isAutosave ? `DRAFT-${Date.now().toString().slice(-8)}` : "");
+    if (!isAutosave && !sku) {
+      return { ok: false, message: "Each colour × purity variant needs its own SKU." };
+    }
+
+    availableSizes = isRing ? unionSizes(quotedDrafts) : [];
+    const availableSizesJsonFinal = JSON.stringify(availableSizes);
+
+    const variantCreateData = quotedDrafts.map((draft, index) => {
+      const sizeWeights = isRing
+        ? parseSizeWeights(serializeSizeWeights(draft.sizeWeights || []))
+        : [];
+      const firstSize = sizeWeights[0];
+      return {
       metalId: draft.metalId,
       purityId: draft.purityId,
       metalColor: draft.metalColor,
-      grossWeight: Number(draft.grossWeight) || 0,
-      netGoldWeight: Number(draft.netGoldWeight) || 0,
+      sku: String(draft.sku || "").trim(),
+      sizeWeightsJson: serializeSizeWeights(sizeWeights),
+      grossWeight: firstSize ? firstSize.grossWeight : Number(draft.grossWeight) || 0,
+      netGoldWeight: firstSize ? firstSize.netGoldWeight : Number(draft.netGoldWeight) || 0,
       stoneIncluded: Boolean(draft.stoneIncluded),
       stoneType: draft.stoneIncluded ? draft.stoneType : "None",
       stoneWeight: draft.stoneIncluded ? Number(draft.stoneWeight) || 0 : 0,
@@ -1015,7 +1101,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       imageUrl: variantAssets[index]?.imageUrl || "",
       shopifyFileId: variantAssets[index]?.shopifyFileId || null,
       status: draft.status,
-    }));
+    };
+    });
 
     let productId = editingId;
     let savedExisting = false;
@@ -1044,6 +1131,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               metalId: vData.metalId,
               purityId: vData.purityId,
               metalColor: vData.metalColor,
+              sku: vData.sku,
+              sizeWeightsJson: vData.sizeWeightsJson,
               grossWeight: vData.grossWeight,
               netGoldWeight: vData.netGoldWeight,
               stoneIncluded: vData.stoneIncluded,
@@ -1098,7 +1187,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           gender,
           dimensionWidth,
           dimensionHeight,
-          availableSizes: availableSizesJson,
+          availableSizes: availableSizesJsonFinal,
           isRing,
           pricingMode,
           discountsJson,
@@ -1122,7 +1211,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           gender,
           dimensionWidth,
           dimensionHeight,
-          availableSizes: availableSizesJson,
+          availableSizes: availableSizesJsonFinal,
           isRing,
           pricingMode,
           discountsJson,
@@ -1237,7 +1326,7 @@ export default function ProductsPage() {
   const exportRows = useMemo((): ProductExportVariant[] => {
     return catalog.flatMap((product) =>
       product.variants.map((variant) => ({
-        sku: product.sku,
+        sku: variant.sku || product.sku,
         name: product.name,
         description: product.description,
         gender: product.gender,
@@ -1480,7 +1569,7 @@ export default function ProductsPage() {
 
     const list = [...variants];
     const canIncludeDraft =
-      (Number(variantForm.netGoldWeight) > 0 || Number(variantForm.grossWeight) > 0) &&
+      (hasVariantGoldWeight(variantForm)) &&
       Boolean(variantForm.metalId) &&
       Boolean(variantForm.purityId) &&
       !list.some(
@@ -1515,6 +1604,7 @@ export default function ProductsPage() {
       (p) =>
         p.name.toLowerCase().includes(q) ||
         p.sku.toLowerCase().includes(q) ||
+        p.variants.some((variant) => String(variant.sku || "").toLowerCase().includes(q)) ||
         p.collection.toLowerCase().includes(q),
     );
   }, [catalog, search]);
@@ -1676,9 +1766,18 @@ export default function ProductsPage() {
         ? variant.stones
         : parseStonesJson("", variant);
       const stoneIncluded = Boolean(variant.stoneIncluded);
+      const sizeWeights =
+        Array.isArray(variant.sizeWeights) && variant.sizeWeights.length
+          ? variant.sizeWeights
+          : product.isRing
+            ? (product.availableSizes || []).map((size) =>
+                emptySizeRow(size, Number(variant.netGoldWeight) || 0, Number(variant.grossWeight) || 0),
+              )
+            : [];
       return {
       key: variant.id,
       id: variant.id,
+      sku: variant.sku || product.sku || "",
       metalId: variant.metalId,
       purityId: variant.purityId,
       metalColor: variant.metalColor,
@@ -1703,6 +1802,7 @@ export default function ProductsPage() {
       manualPrice: Number(variant.manualPrice) || 0,
       stoneRate: Number(variant.stoneRate) || 0,
       stones,
+      sizeWeights,
       status: variant.status,
       imagePreview: variant.imageUrl || "",
       existingImageUrl: variant.imageUrl || "",
@@ -1801,13 +1901,13 @@ export default function ProductsPage() {
     const fd = new FormData();
     fd.set("intent", "autosave-draft");
     if (editingId) fd.set("productId", editingId);
-    fd.set("sku", productForm.sku);
+    fd.set("sku", variantsForSave[0]?.sku || variantForm.sku || productForm.sku);
     fd.set("name", productForm.name);
     fd.set("description", productForm.description);
     fd.set("gender", productForm.gender);
     fd.set("dimensionWidth", productForm.dimensionWidth);
     fd.set("dimensionHeight", productForm.dimensionHeight);
-    fd.set("availableSizes", JSON.stringify(productForm.availableSizes));
+    fd.set("availableSizes", JSON.stringify(unionSizes([variantForm, ...variants])));
     fd.set("isRing", String(productForm.isRing));
     fd.set("discountsJson", serializeDiscountLines(productForm.discounts));
     fd.set("pricingMode", productForm.pricingMode);
@@ -1823,7 +1923,7 @@ export default function ProductsPage() {
     );
     let list = [...variants];
     if (
-      (Number(variantForm.netGoldWeight) > 0 || Number(variantForm.grossWeight) > 0) &&
+      (hasVariantGoldWeight(variantForm)) &&
       variantForm.metalId &&
       variantForm.purityId
     ) {
@@ -1910,9 +2010,17 @@ export default function ProductsPage() {
     }));
   };
 
-  const saveVariantToList = () => {
+    const saveVariantToList = () => {
     if (!variantForm.metalId || !variantForm.purityId) return;
-    if (!(Number(variantForm.netGoldWeight) > 0) && !(Number(variantForm.grossWeight) > 0)) return;
+    if (!String(variantForm.sku || "").trim()) {
+      window.alert("Enter a SKU for this colour × purity.");
+      return;
+    }
+    if (productForm.isRing && !(variantForm.sizeWeights || []).some((row) => row.size)) {
+      window.alert("Add at least one size with weight for this metal.");
+      return;
+    }
+    if (!hasVariantGoldWeight(variantForm)) return;
     if (productForm.pricingMode === "manual" && !(Number(variantForm.manualPrice) > 0)) return;
     if (variantForm.stoneIncluded && !diamondQuote.ok) return;
 
@@ -1971,10 +2079,6 @@ export default function ProductsPage() {
 
   const handleSaveSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (productForm.isRing && !productForm.availableSizes.length) {
-      window.alert("This is a ring — select at least one size variant.");
-      return;
-    }
     const form = event.currentTarget;
     const fd = new FormData(form);
     fd.set("intent", editingId ? "update" : "create");
@@ -1994,7 +2098,7 @@ export default function ProductsPage() {
     let list = [...variants];
     if (!enableVariants) {
       // Direct product: persist only the current metal/pricing form as a single entry
-      if (!(Number(variantForm.netGoldWeight) > 0) && !(Number(variantForm.grossWeight) > 0)) return;
+      if (!hasVariantGoldWeight(variantForm)) return;
       if (productForm.pricingMode === "manual" && !(Number(variantForm.manualPrice) > 0)) return;
       if (variantForm.stoneIncluded && !diamondQuote.ok) return;
       const directKey = editingVariantKey || variants[0]?.key || emptyVariant().key;
@@ -2010,7 +2114,7 @@ export default function ProductsPage() {
       ];
       if (draftFile) nextVariantFiles[directKey] = draftFile;
     } else if (editingVariantKey) {
-      if (!(Number(variantForm.netGoldWeight) > 0) && !(Number(variantForm.grossWeight) > 0)) return;
+      if (!hasVariantGoldWeight(variantForm)) return;
       if (productForm.pricingMode === "manual" && !(Number(variantForm.manualPrice) > 0)) return;
       if (variantForm.stoneIncluded && !diamondQuote.ok) return;
       if (draftFile) nextVariantFiles[editingVariantKey] = draftFile;
@@ -2028,7 +2132,7 @@ export default function ProductsPage() {
       );
     } else {
       const canIncludeDraft =
-        (Number(variantForm.netGoldWeight) > 0 || Number(variantForm.grossWeight) > 0) &&
+        (hasVariantGoldWeight(variantForm)) &&
         Boolean(variantForm.metalId) &&
         Boolean(variantForm.purityId) &&
         !list.some(
@@ -2065,6 +2169,22 @@ export default function ProductsPage() {
       if (draftFile) nextVariantFiles[draftKey] = draftFile;
     }
 
+    if (list.some((variant) => !String(variant.sku || "").trim())) {
+      window.alert("Each colour × purity variant needs its own SKU.");
+      return;
+    }
+    const skuKeys = list.map((variant) => String(variant.sku).trim().toLowerCase());
+    if (new Set(skuKeys).size !== skuKeys.length) {
+      window.alert("Variant SKUs must be unique.");
+      return;
+    }
+    if (productForm.isRing && list.some((variant) => !(variant.sizeWeights || []).some((row) => row.size))) {
+      window.alert("Add at least one size with weight for each colour × purity.");
+      return;
+    }
+
+    fd.set("sku", String(list[0]?.sku || "").trim());
+    fd.set("availableSizes", JSON.stringify(productForm.isRing ? unionSizes(list) : []));
     fd.set(
       "variantsJson",
       JSON.stringify(list.map(({ imagePreview: _p, ...rest }) => rest)),
@@ -2203,19 +2323,6 @@ export default function ProductsPage() {
                 </div>
                 <div className="field-row">
                   <div className="field">
-                    <label>SKU</label>
-                    <input
-                      name="sku"
-                      className="mono"
-                      value={productForm.sku}
-                      onChange={(e) =>
-                        setProductForm((c) => ({ ...c, sku: e.target.value }))
-                      }
-                      placeholder="JW-1001"
-                      required
-                    />
-                  </div>
-                  <div className="field">
                     <label>Gender preference</label>
                     <select
                       name="gender"
@@ -2265,7 +2372,8 @@ export default function ProductsPage() {
                     />
                   </div>
                 </div>
-                <input type="hidden" name="availableSizes" value={JSON.stringify(productForm.availableSizes)} />
+                <input type="hidden" name="sku" value={variantForm.sku || productForm.sku} />
+                <input type="hidden" name="availableSizes" value={JSON.stringify(unionSizes([variantForm, ...variants]))} />
                 <input type="hidden" name="isRing" value={String(productForm.isRing)} />
                 <input type="hidden" name="discountsJson" value={serializeDiscountLines(productForm.discounts)} />
 
@@ -2386,6 +2494,37 @@ export default function ProductsPage() {
                 </div>
 
                 <div className="field">
+                  <label>Is this a ring?</label>
+                  <div className="radio-inline">
+                    <label>
+                      <input
+                        type="radio"
+                        name="is-ring"
+                        checked={!productForm.isRing}
+                        onChange={() => {
+                          setProductForm((c) => ({ ...c, isRing: false, availableSizes: [] }));
+                          setVariantForm((c) => ({ ...c, sizeWeights: [] }));
+                          setVariants((current) => current.map((item) => ({ ...item, sizeWeights: [] })));
+                        }}
+                      />
+                      No
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="is-ring"
+                        checked={productForm.isRing}
+                        onChange={() => setProductForm((c) => ({ ...c, isRing: true }))}
+                      />
+                      Yes
+                    </label>
+                  </div>
+                  <div className="hint">
+                    If yes, add sizes and gold weights on each colour × purity variant.
+                  </div>
+                </div>
+
+                <div className="field">
                   <label>Status</label>
                   <select
                     name="status"
@@ -2429,7 +2568,7 @@ export default function ProductsPage() {
                     </select>
                   </div>
                   <div className="field">
-                    <label>Purity</label>
+                    <label>Purity / clarity</label>
                     <select
                       value={variantForm.purityId}
                       onChange={(e) =>
@@ -2442,6 +2581,20 @@ export default function ProductsPage() {
                         </option>
                       ))}
                     </select>
+                  </div>
+                  <div className="field">
+                    <label>SKU</label>
+                    <input
+                      className="mono"
+                      value={variantForm.sku}
+                      onChange={(e) => {
+                        const sku = e.target.value;
+                        setVariantForm((c) => ({ ...c, sku }));
+                        setProductForm((c) => ({ ...c, sku }));
+                      }}
+                      placeholder="JW-1001-YG"
+                    />
+                    <div className="hint">Unique for this colour × purity.</div>
                   </div>
                   <div className="field">
                     <label>Net gold weight (g)</label>
@@ -2462,57 +2615,38 @@ export default function ProductsPage() {
                       }
                       placeholder="0.00"
                     />
-                    <div className="hint">Gold weight. Entered separately from gross weight.</div>
-                  </div>
-                </div>
-                <div className="field">
-                  <label>Is this a ring?</label>
-                  <div className="radio-inline">
-                    <label>
-                      <input
-                        type="radio"
-                        name="is-ring"
-                        checked={!productForm.isRing}
-                        onChange={() =>
-                          setProductForm((c) => ({ ...c, isRing: false, availableSizes: [] }))
-                        }
-                      />
-                      No
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="is-ring"
-                        checked={productForm.isRing}
-                        onChange={() => setProductForm((c) => ({ ...c, isRing: true }))}
-                      />
-                      Yes
-                    </label>
+                    <div className="hint">
+                      {productForm.isRing
+                        ? "Starting gold weight when you add a size row."
+                        : "Gold weight. Entered separately from gross weight."}
+                    </div>
                   </div>
                 </div>
                 {productForm.isRing ? (
                 <div className="field">
-                  <label>Ring size variants</label>
+                  <label>Size-weight table for this metal</label>
                   <div className="hint" style={{ marginBottom: 8 }}>
-                    Sizes sit with colour × purity so the ring variants stay together.
+                    Each size is a Shopify variant with this SKU plus size. Bigger size can have more gold and a higher price.
                   </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  <div className="size-weight-add">
                     {RING_SIZE_OPTIONS.map((size) => {
-                      const selected = productForm.availableSizes.includes(size);
+                      const selected = (variantForm.sizeWeights || []).some((row) => row.size === size);
                       return (
                         <button
                           key={size}
                           type="button"
                           className={`btn small${selected ? " primary" : ""}`}
                           onClick={() =>
-                            setProductForm((current) => ({
-                              ...current,
-                              availableSizes: selected
-                                ? current.availableSizes.filter((item) => item !== size)
-                                : [...current.availableSizes, size].sort(
-                                    (a, b) => Number(a) - Number(b) || a.localeCompare(b),
-                                  ),
-                            }))
+                            setVariantForm((current) => {
+                              const rows = current.sizeWeights || [];
+                              if (selected) {
+                                return { ...current, sizeWeights: rows.filter((row) => row.size !== size) };
+                              }
+                              return {
+                                ...current,
+                                sizeWeights: [...rows, emptySizeRow(size, current.netGoldWeight, current.grossWeight)],
+                              };
+                            })
                           }
                         >
                           {size}
@@ -2537,26 +2671,111 @@ export default function ProductsPage() {
                         onClick={() => {
                           const size = customRingSize.trim();
                           if (!size) return;
-                          setProductForm((current) => ({
-                            ...current,
-                            availableSizes: current.availableSizes.includes(size)
-                              ? current.availableSizes
-                              : [...current.availableSizes, size],
-                          }));
+                          setVariantForm((current) => {
+                            const rows = current.sizeWeights || [];
+                            if (rows.some((row) => row.size === size)) return current;
+                            return {
+                              ...current,
+                              sizeWeights: [...rows, emptySizeRow(size, current.netGoldWeight, current.grossWeight)],
+                            };
+                          });
                           setCustomRingSize("");
                         }}
                       >
-                        Add size variant
+                        Add size
                       </button>
                     </div>
                   </div>
-                  {productForm.availableSizes.length ? (
-                    <div className="hint" style={{ marginTop: 8 }}>
-                      Size variants: {productForm.availableSizes.join(", ")}
-                    </div>
+                  {(variantForm.sizeWeights || []).length ? (
+                    <table className="size-weight-table">
+                      <thead>
+                        <tr>
+                          <th>Size</th>
+                          <th>Net gold (g)</th>
+                          <th>Gross (g)</th>
+                          <th>Price</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(variantForm.sizeWeights || []).map((row, index) => {
+                          const rowPrice = calculateProductPrice(
+                            variantPriceInput(
+                              {
+                                ...variantForm,
+                                netGoldWeight: row.netGoldWeight,
+                                grossWeight: row.grossWeight,
+                              },
+                              goldPricePerGram,
+                              productForm.pricingMode,
+                              mergedDiscountLines(
+                                productForm.discounts,
+                                discountRules,
+                                editingId,
+                                selectedCollections.map((item) => item.id),
+                              ),
+                            ),
+                          ).total;
+                          return (
+                            <tr key={`${row.size}-${index}`}>
+                              <td className="mono">{row.size}</td>
+                              <td>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  min="0"
+                                  value={row.netGoldWeight || ""}
+                                  onChange={(e) => {
+                                    const netGoldWeight = Number(e.target.value) || 0;
+                                    setVariantForm((current) => ({
+                                      ...current,
+                                      sizeWeights: (current.sizeWeights || []).map((item, i) =>
+                                        i === index ? { ...item, netGoldWeight } : item,
+                                      ),
+                                    }));
+                                  }}
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  min="0"
+                                  value={row.grossWeight || ""}
+                                  onChange={(e) => {
+                                    const grossWeight = Number(e.target.value) || 0;
+                                    setVariantForm((current) => ({
+                                      ...current,
+                                      sizeWeights: (current.sizeWeights || []).map((item, i) =>
+                                        i === index ? { ...item, grossWeight } : item,
+                                      ),
+                                    }));
+                                  }}
+                                />
+                              </td>
+                              <td className="mono">{formatINR(rowPrice)}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="btn small outline-remove"
+                                  onClick={() =>
+                                    setVariantForm((current) => ({
+                                      ...current,
+                                      sizeWeights: (current.sizeWeights || []).filter((_, i) => i !== index),
+                                    }))
+                                  }
+                                >
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   ) : (
                     <div className="hint" style={{ marginTop: 8 }}>
-                      Choose at least one size before saving.
+                      Choose at least one size and enter its gold weights.
                     </div>
                   )}
                 </div>
@@ -3109,6 +3328,7 @@ export default function ProductsPage() {
                               )}
                               <div>
                                 <strong>
+                                  {variant.sku ? `${variant.sku} · ` : ""}
                                   {variant.metalColor} · {purity?.label} · Gross:{" "}
                                   {formatGrams(variant.grossWeight)} (Net:{" "}
                                   {formatGrams(
@@ -3120,6 +3340,14 @@ export default function ProductsPage() {
                                   )}
                                   )
                                 </strong>
+                                {(variant.sizeWeights || []).length ? (
+                                  <div className="hint">
+                                    Sizes:{" "}
+                                    {(variant.sizeWeights || [])
+                                      .map((row) => `${row.size} (${formatGrams(row.netGoldWeight)} net)`)
+                                      .join(", ")}
+                                  </div>
+                                ) : null}
                                 {isEditingRow ? (
                                   <div className="hint">Currently editing</div>
                                 ) : null}
@@ -3286,11 +3514,12 @@ export default function ProductsPage() {
                     busy ||
                     (enableVariants
                       ? variantsForSave.length === 0
-                      : (!(Number(variantForm.netGoldWeight) > 0) &&
-                          !(Number(variantForm.grossWeight) > 0)) ||
-                        (productForm.pricingMode === "manual" &&
-                          !(Number(variantForm.manualPrice) > 0)) ||
-                        (variantForm.stoneIncluded && !diamondQuote.ok))
+                      : (
+                          !hasVariantGoldWeight(variantForm) ||
+                          (productForm.pricingMode === "manual" &&
+                            !(Number(variantForm.manualPrice) > 0)) ||
+                          (variantForm.stoneIncluded && !diamondQuote.ok)
+                        ))
                   }
                 >
                   {busy
@@ -3586,7 +3815,10 @@ export default function ProductsPage() {
                                 <img src={variant.imageUrl} alt="" className="upload-thumb" />
                               ) : null}
                               <div>
-                                <strong>{variant.label}</strong>
+                                <strong>
+                                  {variant.sku ? `${variant.sku} · ` : ""}
+                                  {variant.label}
+                                </strong>
                                 <div className="hint">
                                   Gross {formatGrams(variant.grossWeight)} · Wastage{" "}
                                   {variant.wastagePercent}% · Making{" "}
@@ -3595,6 +3827,9 @@ export default function ProductsPage() {
                                     : normalizeMakingChargeType(variant.makingChargeType) === "per_gram"
                                       ? `${formatINR(variant.makingChargeValue)}/g`
                                       : formatINR(variant.makingChargeValue)}
+                                  {(variant.sizeWeights || []).length
+                                    ? ` · Sizes ${(variant.sizeWeights || []).map((row) => row.size).join(", ")}`
+                                    : ""}
                                 </div>
                               </div>
                             </div>

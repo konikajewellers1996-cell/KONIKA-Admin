@@ -102,8 +102,10 @@ model ProductVariant {
   metalId            String
   purityId           String
   metalColor         String
+  sku                String       @default("")
   grossWeight        Float
   netGoldWeight      Float        @default(0)
+  sizeWeightsJson    String       @default("[]")
   stoneIncluded      Boolean      @default(false)
   stoneType          String       @default("None")
   stoneWeight        Float        @default(0)

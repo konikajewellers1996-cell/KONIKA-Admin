@@ -811,6 +811,37 @@ select.filter {
   align-items: start;
 }
 
+.size-weight-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.size-weight-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.size-weight-table th,
+.size-weight-table td {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.size-weight-table th {
+  color: var(--text-secondary-heading);
+  font-weight: 600;
+}
+
+.size-weight-table input {
+  width: 100%;
+  min-width: 0;
+}
+
 .summary-card {
   background: var(--panel);
   border: 1px solid var(--line);
