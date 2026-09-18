@@ -3,6 +3,7 @@ import {
   type MakingChargeType,
   type PriceBreakdown,
 } from "./pricing";
+import { isDiamondStone, parseStonesJson, stoneWeightInGrams } from "./stones";
 
 type GraphqlClient = (
   query: string,
@@ -25,6 +26,7 @@ export type MetafieldVariantSource = {
   diamondCount?: number;
   diamondQuality?: { color: string; clarity: string; name: string } | null;
   purity?: { label: string; purityValue: number } | null;
+  stonesJson?: string | null;
 };
 
 function formatInrAmount(value: number): string {
@@ -65,6 +67,7 @@ export function buildVariantPriceBreakup(
   diamondWeightLabel: string;
   diamondCountLabel: string;
 } {
+  const stones = parseStonesJson(variant.stonesJson, variant);
   const goldRate = goldRateForVariant(
     baseGoldPricePerGram,
     variant.purity?.purityValue,
@@ -79,6 +82,7 @@ export function buildVariantPriceBreakup(
     makingChargeValue: variant.makingChargeValue,
     stoneRate: variant.stoneRate,
     goldPricePerGram: goldRate,
+    stones,
   });
 
   const purityLabel = variant.purity?.label || "22K";
@@ -86,7 +90,9 @@ export function buildVariantPriceBreakup(
   const stoneType =
     variant.stoneIncluded && variant.stoneType && variant.stoneType !== "None"
       ? variant.stoneType
-      : "";
+      : stones.length
+        ? stones.map((stone) => stone.stoneType).join(" + ")
+        : "";
 
   const pricing: Record<string, string> = {
     gold_rate: `${formatInrAmount(goldRate)}/g`,
@@ -114,13 +120,17 @@ export function buildVariantPriceBreakup(
         }
       : null;
 
-  const stoneWeightInGrams =
-    variant.stoneIncluded && variant.stoneType === "Diamond"
+  const stoneWeightGrams = stones.length
+    ? stones.reduce((sum, stone) => sum + stoneWeightInGrams(stone), 0)
+    : variant.stoneIncluded && isDiamondStone(variant.stoneType)
       ? (Number(variant.stoneWeight) || 0) * 0.2
       : variant.stoneIncluded
         ? Number(variant.stoneWeight) || 0
         : 0;
-  const netGold = Math.max((Number(variant.grossWeight) || 0) - stoneWeightInGrams, 0);
+  const netGold = Math.max((Number(variant.grossWeight) || 0) - stoneWeightGrams, 0);
+  const diamondStones = stones.filter((stone) => isDiamondStone(stone.stoneType));
+  const diamondCarat = diamondStones.reduce((sum, stone) => sum + (Number(stone.weight) || 0), 0);
+  const diamondCount = diamondStones.reduce((sum, stone) => sum + (Number(stone.diamondCount) || 0), 0);
 
   return {
     breakdown,
@@ -134,15 +144,21 @@ export function buildVariantPriceBreakup(
     grossWeightLabel: formatWeight(variant.grossWeight),
     netWeightLabel: formatWeight(netGold),
     diamondWeightLabel:
-      variant.stoneIncluded && variant.stoneType === "Diamond"
-        ? formatWeight(variant.stoneWeight, "ct")
-        : variant.stoneIncluded
-          ? formatWeight(variant.stoneWeight)
-          : "",
+      diamondCarat > 0
+        ? formatWeight(diamondCarat, "ct")
+        : stones.length
+          ? ""
+          : variant.stoneIncluded && isDiamondStone(variant.stoneType)
+            ? formatWeight(variant.stoneWeight, "ct")
+            : variant.stoneIncluded
+              ? formatWeight(variant.stoneWeight)
+              : "",
     diamondCountLabel:
-      variant.stoneIncluded && (variant.diamondCount || 0) > 0
-        ? `${variant.diamondCount} pcs`
-        : "",
+      diamondCount > 0
+        ? `${diamondCount} pcs`
+        : variant.stoneIncluded && (variant.diamondCount || 0) > 0
+          ? `${variant.diamondCount} pcs`
+          : "",
   };
 }
 

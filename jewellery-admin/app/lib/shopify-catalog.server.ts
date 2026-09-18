@@ -1,6 +1,7 @@
 import { priceToShopifyString, calculateProductPrice, type MakingChargeType } from "./pricing";
 import { htmlToPlainText, normalizeImageUrl } from "./text";
 import { syncProductJewelleryMetafields } from "./shopify-metafields.server";
+import { parseStonesJson } from "./stones";
 import prisma from "../db.server";
 
 
@@ -1130,6 +1131,7 @@ export async function syncAllProductPricesToShopify(graphql: GraphqlClient, gold
           goldPricePerGram: variant.purity
             ? (goldPricePerGram / 0.916) * variant.purity.purityValue
             : goldPricePerGram,
+          stones: parseStonesJson(variant.stonesJson, variant),
         }).total,
       }));
 
@@ -1309,6 +1311,7 @@ export async function syncSingleProductToShopify(
           goldPricePerGram: variant.purity
             ? (goldPricePerGram / 0.916) * variant.purity.purityValue
             : goldPricePerGram,
+          stones: parseStonesJson(variant.stonesJson, variant),
         }).total,
         status: variant.status,
       })),

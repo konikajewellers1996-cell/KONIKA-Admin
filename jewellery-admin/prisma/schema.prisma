@@ -111,6 +111,7 @@ model ProductVariant {
   makingChargeType   String       @default("percent")
   makingChargeValue  Float        @default(0)
   stoneRate          Float        @default(0)
+  stonesJson         String       @default("[]")
   imageUrl           String       @default("")
   shopifyFileId      String?
   shopifyVariantId   String?
@@ -121,6 +122,16 @@ model ProductVariant {
   metal              MetalType    @relation(fields: [metalId], references: [id])
   purity             PurityLevel     @relation(fields: [purityId], references: [id])
   diamondQuality     DiamondQuality? @relation(fields: [diamondQualityId], references: [id], onDelete: SetNull)
+}
+
+model GemstoneType {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  color       String   @default("")
+  defaultRate Float    @default(0)
+  status      String   @default("Active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model DiamondQuality {

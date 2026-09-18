@@ -20,7 +20,7 @@ import {
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
-  const [metals, purities, diamondQualities] = await Promise.all([
+  const [metals, purities, diamondQualities, gemstones] = await Promise.all([
     prisma.metalType.findMany({ orderBy: [{ name: "asc" }, { color: "asc" }] }),
     prisma.purityLevel.findMany({
       include: { metal: true },
@@ -30,8 +30,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       include: { slabs: { orderBy: { centsFrom: "asc" } } },
       orderBy: [{ color: "asc" }, { clarity: "asc" }],
     }),
+    prisma.gemstoneType.findMany({ orderBy: { name: "asc" } }),
   ]);
-  return { metals, purities, diamondQualities };
+  return { metals, purities, diamondQualities, gemstones };
 };
 
 function parsePositiveNumber(value: FormDataEntryValue | null) {
@@ -119,6 +120,41 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
       await prisma.purityLevel.delete({ where: { id } });
       return { ok: true, message: "Purity deleted." };
+    }
+
+    if (intent === "add-gemstone") {
+      const name = String(form.get("name") || "").trim();
+      const color = String(form.get("color") || "").trim();
+      const defaultRate = Number(form.get("defaultRate") || 0);
+      if (!name) return { ok: false, message: "Gemstone name is required." };
+      const existing = await prisma.gemstoneType.findUnique({ where: { name } });
+      if (existing) return { ok: false, message: `${name} already exists.` };
+      await prisma.gemstoneType.create({
+        data: {
+          name,
+          color,
+          defaultRate: Number.isFinite(defaultRate) ? defaultRate : 0,
+          status: "Active",
+        },
+      });
+      return { ok: true, message: `${name} added to gemstone master.` };
+    }
+
+    if (intent === "toggle-gemstone") {
+      const id = String(form.get("id") || "");
+      const gem = await prisma.gemstoneType.findUnique({ where: { id } });
+      if (!gem) return { ok: false, message: "Gemstone not found." };
+      await prisma.gemstoneType.update({
+        where: { id },
+        data: { status: gem.status === "Active" ? "Inactive" : "Active" },
+      });
+      return { ok: true, message: "Gemstone status updated." };
+    }
+
+    if (intent === "delete-gemstone") {
+      const id = String(form.get("id") || "");
+      await prisma.gemstoneType.delete({ where: { id } });
+      return { ok: true, message: "Gemstone deleted." };
     }
 
     if (intent === "add-diamond-quality") {
@@ -373,7 +409,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function MetalsPage() {
-  const { metals, purities, diamondQualities } = useLoaderData<typeof loader>();
+  const { metals, purities, diamondQualities, gemstones } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
@@ -464,7 +500,7 @@ export default function MetalsPage() {
         <div>
           <h2 className="page-title">Metals &amp; diamonds</h2>
           <p className="page-sub">
-            Configure metals, purities, and diamond pricing by quality and stone size.
+            Configure metals, purities, diamond pricing, and gemstone master.
           </p>
         </div>
       </div>
@@ -487,6 +523,15 @@ export default function MetalsPage() {
           onClick={() => setActiveTab("diamonds")}
         >
           Diamond pricing
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "gemstones"}
+          className={`tab-btn ${activeTab === "gemstones" ? "active" : ""}`}
+          onClick={() => setActiveTab("gemstones")}
+        >
+          Gemstones
         </button>
       </div>
 
@@ -655,6 +700,98 @@ export default function MetalsPage() {
                 </tbody>
               </table>
             </div>
+          </div>
+        </>
+      ) : activeTab === "gemstones" ? (
+        <>
+          <div className="split-2">
+            <div className="panel">
+              <div className="panel-title">Add gemstone</div>
+              <div className="hint" style={{ marginBottom: 12 }}>
+                These names appear in the product stones dropdown. You can add several stones on one variant.
+              </div>
+              <Form method="post">
+                <input type="hidden" name="intent" value="add-gemstone" />
+                <div className="field">
+                  <label>Name</label>
+                  <input name="name" placeholder="e.g. Ruby" required />
+                </div>
+                <div className="field-row">
+                  <div className="field">
+                    <label>Colour (optional)</label>
+                    <input name="color" placeholder="e.g. Red" />
+                  </div>
+                  <div className="field">
+                    <label>Default rate ₹ / g</label>
+                    <input name="defaultRate" type="number" step="0.01" min="0" defaultValue="0" />
+                  </div>
+                </div>
+                <button className="btn primary" type="submit" disabled={busy}>
+                  Add gemstone
+                </button>
+              </Form>
+            </div>
+            <div className="panel">
+              <div className="panel-title">How it works</div>
+              <p className="hint">
+                Diamond pricing stays on the Diamond tab. Gemstones here are coloured stones, pearls, and other
+                materials. While creating a product, pick Diamond or any gemstone from this master, and add more than
+                one stone on the same variant.
+              </p>
+            </div>
+          </div>
+          <div className="table-wrap" style={{ marginTop: 16 }}>
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Colour</th>
+                  <th>Default rate</th>
+                  <th>Status</th>
+                  <th style={{ textAlign: "right", width: 160 }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {gemstones.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>
+                      <div className="empty">No gemstones yet.</div>
+                    </td>
+                  </tr>
+                ) : (
+                  gemstones.map((gem) => (
+                    <tr key={gem.id}>
+                      <td>{gem.name}</td>
+                      <td>{gem.color || "—"}</td>
+                      <td className="mono">{gem.defaultRate ? gem.defaultRate : "—"}</td>
+                      <td>
+                        <span className={`badge ${gem.status === "Active" ? "active" : "draft"}`}>
+                          {gem.status}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="row-actions">
+                          <Form method="post">
+                            <input type="hidden" name="intent" value="toggle-gemstone" />
+                            <input type="hidden" name="id" value={gem.id} />
+                            <button className="btn small" type="submit" disabled={busy}>
+                              {gem.status === "Active" ? "Off" : "On"}
+                            </button>
+                          </Form>
+                          <Form method="post">
+                            <input type="hidden" name="intent" value="delete-gemstone" />
+                            <input type="hidden" name="id" value={gem.id} />
+                            <button className="btn small danger" type="submit" disabled={busy}>
+                              Delete
+                            </button>
+                          </Form>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
         </>
       ) : (

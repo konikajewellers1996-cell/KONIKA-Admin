@@ -37,6 +37,15 @@ import {
 import { ALL_COLLECTIONS_NAME } from "../lib/collections";
 import { ensureAllCollectionsCollection } from "../lib/seed.server";
 import { htmlToPlainText, normalizeImageUrl } from "../lib/text";
+import {
+  emptyStoneLine,
+  isDiamondStone,
+  parseStonesJson,
+  serializeStones,
+  stonesToLegacy,
+  stoneWeightInGrams,
+  type StoneLine,
+} from "../lib/stones";
 
 type VariantDraft = {
   key: string;
@@ -56,6 +65,7 @@ type VariantDraft = {
   makingChargeType: MakingChargeType;
   makingChargeValue: number;
   stoneRate: number;
+  stones: StoneLine[];
   status: "Active" | "Draft";
   imagePreview?: string;
   existingImageUrl?: string;
@@ -172,6 +182,7 @@ const emptyVariant = (metalId = "", purityId = "", metalColor = ""): VariantDraf
   makingChargeType: "percent",
   makingChargeValue: 10,
   stoneRate: 0,
+  stones: [],
   status: "Active",
   imagePreview: "",
   existingImageUrl: "",
@@ -193,7 +204,7 @@ const emptyProductForm = (collectionIds: string[] = []): ProductFormState => ({
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
 
-  const [settings, collections, metals, purities, products, diamondQualities] = await Promise.all([
+  const [settings, collections, metals, purities, products, diamondQualities, gemstones] = await Promise.all([
     prisma.appSetting.findUnique({ where: { id: "default" } }),
     prisma.collection.findMany({
       include: { parent: true },
@@ -223,6 +234,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     prisma.diamondQuality.findMany({
       include: { slabs: { orderBy: { centsFrom: "asc" } } },
       orderBy: [{ color: "asc" }, { clarity: "asc" }],
+    }),
+    prisma.gemstoneType.findMany({
+      where: { status: "Active" },
+      orderBy: { name: "asc" },
     }),
   ]);
 
@@ -329,6 +344,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         shopifyFileId: variant.shopifyFileId,
         purityLabel: variant.purity?.label || "",
         label: `${variant.metalColor} · ${variant.purity?.label || "22K"}`,
+        stones: parseStonesJson(variant.stonesJson, variant),
         price: calculateProductPrice({
           grossWeight: variant.grossWeight,
           stoneWeight: variant.stoneWeight,
@@ -341,12 +357,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           goldPricePerGram: variant.purity
             ? (goldPricePerGram / 0.916) * variant.purity.purityValue
             : goldPricePerGram,
+          stones: parseStonesJson(variant.stonesJson, variant),
         }).total,
       })),
     };
   });
 
-  return { goldPricePerGram, collections, metals, purities, catalog, diamondQualities };
+  return { goldPricePerGram, collections, metals, purities, catalog, diamondQualities, gemstones };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -673,6 +690,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             makingChargeType: "percent",
             makingChargeValue: 10,
             stoneRate: 0,
+            stones: [],
             status: "Active",
           },
         ];
@@ -741,41 +759,49 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       include: { slabs: true },
     });
 
-    const quotedDrafts: Array<
-      VariantDraft & { quotedStoneRate: number; quotedPricePerCarat: number }
-    > = [];
+    const quotedDrafts: VariantDraft[] = [];
     for (const draft of drafts) {
-      if (!(draft.stoneIncluded && draft.stoneType === "Diamond")) {
-        quotedDrafts.push({
-          ...draft,
-          quotedStoneRate: Number(draft.stoneRate) || 0,
-          quotedPricePerCarat: 0,
+      const sourceStones =
+        draft.stoneIncluded
+          ? Array.isArray(draft.stones) && draft.stones.length
+            ? draft.stones
+            : parseStonesJson("", draft)
+          : [];
+      const quotedStones: StoneLine[] = [];
+      for (const stone of sourceStones) {
+        if (!isDiamondStone(stone.stoneType)) {
+          quotedStones.push(stone);
+          continue;
+        }
+        const quality = diamondQualities.find((item) => item.id === stone.diamondQualityId);
+        const quote = quoteDiamondValue({
+          totalCarat: Number(stone.weight) || 0,
+          diamondCount: Number(stone.diamondCount) || 0,
+          quality: quality
+            ? {
+                id: quality.id,
+                name: quality.name,
+                color: quality.color,
+                clarity: quality.clarity,
+                slabs: quality.slabs,
+              }
+            : null,
         });
-        continue;
+        if (!quote.ok) {
+          return { ok: false, message: quote.message };
+        }
+        quotedStones.push({
+          ...stone,
+          diamondCount: quote.diamondCount,
+          rate: quote.diamondValue,
+          pricePerCarat: quote.pricePerCarat,
+        });
       }
-
-      const quality = diamondQualities.find((item) => item.id === draft.diamondQualityId);
-      const quote = quoteDiamondValue({
-        totalCarat: Number(draft.stoneWeight) || 0,
-        diamondCount: Number(draft.diamondCount) || 0,
-        quality: quality
-          ? {
-              id: quality.id,
-              name: quality.name,
-              color: quality.color,
-              clarity: quality.clarity,
-              slabs: quality.slabs,
-            }
-          : null,
-      });
-      if (!quote.ok) {
-        return { ok: false, message: quote.message };
-      }
+      const legacy = stonesToLegacy(quotedStones);
       quotedDrafts.push({
         ...draft,
-        diamondCount: quote.diamondCount,
-        quotedStoneRate: quote.diamondValue,
-        quotedPricePerCarat: quote.pricePerCarat,
+        ...legacy,
+        stones: quotedStones,
       });
     }
 
@@ -787,18 +813,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       stoneIncluded: Boolean(draft.stoneIncluded),
       stoneType: draft.stoneIncluded ? draft.stoneType : "None",
       stoneWeight: draft.stoneIncluded ? Number(draft.stoneWeight) || 0 : 0,
-      diamondCategory:
-        draft.stoneIncluded && draft.stoneType === "Diamond" ? draft.diamondCategory : "",
-      diamondQualityId:
-        draft.stoneIncluded && draft.stoneType === "Diamond" ? draft.diamondQualityId || null : null,
-      diamondCount:
-        draft.stoneIncluded && draft.stoneType === "Diamond" ? Number(draft.diamondCount) || 1 : 1,
-      pricePerCarat:
-        draft.stoneIncluded && draft.stoneType === "Diamond" ? draft.quotedPricePerCarat : 0,
+      diamondCategory: draft.stoneIncluded ? draft.diamondCategory : "",
+      diamondQualityId: draft.stoneIncluded ? draft.diamondQualityId || null : null,
+      diamondCount: draft.stoneIncluded ? Number(draft.diamondCount) || 1 : 1,
+      pricePerCarat: draft.stoneIncluded ? Number(draft.pricePerCarat) || 0 : 0,
       wastagePercent: Number(draft.wastagePercent) || 0,
       makingChargeType: draft.makingChargeType,
       makingChargeValue: Number(draft.makingChargeValue) || 0,
-      stoneRate: draft.quotedStoneRate,
+      stoneRate: Number(draft.stoneRate) || 0,
+      stonesJson: draft.stoneIncluded ? serializeStones(draft.stones || []) : "[]",
       imageUrl: variantAssets[index]?.imageUrl || "",
       shopifyFileId: variantAssets[index]?.shopifyFileId || null,
       status: draft.status,
@@ -839,6 +862,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               makingChargeType: vData.makingChargeType,
               makingChargeValue: vData.makingChargeValue,
               stoneRate: vData.stoneRate,
+              stonesJson: vData.stonesJson,
               status: vData.status,
               ...(vData.imageUrl ? { imageUrl: vData.imageUrl, shopifyFileId: vData.shopifyFileId } : {}),
             },
@@ -936,7 +960,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function ProductsPage() {
-  const { goldPricePerGram, collections, metals, purities, catalog, diamondQualities } =
+  const { goldPricePerGram, collections, metals, purities, catalog, diamondQualities, gemstones } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -1076,31 +1100,97 @@ export default function ProductsPage() {
     [selectedPurity, goldPricePerGram],
   );
 
-  const selectedDiamondQuality = useMemo(
-    () => diamondQualities.find((item) => item.id === variantForm.diamondQualityId) ?? null,
-    [diamondQualities, variantForm.diamondQualityId],
+  const stoneOptions = useMemo(
+    () => ["Diamond", ...gemstones.map((gem) => gem.name)],
+    [gemstones],
   );
 
-  const diamondQuote = useMemo(
-    () =>
-      quoteDiamondValue({
-        totalCarat: variantForm.stoneWeight,
-        diamondCount: variantForm.diamondCount,
-        quality: selectedDiamondQuality as DiamondQualityLike | null,
+  const quotedStones = useMemo(() => {
+    if (!variantForm.stoneIncluded) return [];
+    const lines = variantForm.stones?.length ? variantForm.stones : [];
+    return lines.map((stone) => {
+      if (!isDiamondStone(stone.stoneType)) {
+        return { stone, quote: { ok: true as const } };
+      }
+      const quality = diamondQualities.find((item) => item.id === stone.diamondQualityId) ?? null;
+      return {
+        stone,
+        quote: quoteDiamondValue({
+          totalCarat: stone.weight,
+          diamondCount: stone.diamondCount,
+          quality: quality as DiamondQualityLike | null,
+        }),
+      };
+    });
+  }, [variantForm.stoneIncluded, variantForm.stones, diamondQualities]);
+
+  const diamondQuote = useMemo(() => {
+    const failed = quotedStones.find((item) => "ok" in item.quote && !item.quote.ok);
+    return failed?.quote || { ok: true as const, message: "" };
+  }, [quotedStones]);
+
+  const quotedStoneRate = quotedStones.reduce((sum, item) => {
+    if (isDiamondStone(item.stone.stoneType)) {
+      return sum + (item.quote.ok && "diamondValue" in item.quote ? item.quote.diamondValue : 0);
+    }
+    return sum + (Number(item.stone.weight) || 0) * (Number(item.stone.rate) || 0);
+  }, 0);
+
+  const quotedPricePerCarat = (() => {
+    const diamond = quotedStones.find(
+      (item) => isDiamondStone(item.stone.stoneType) && item.quote.ok && "pricePerCarat" in item.quote,
+    );
+    return diamond && "pricePerCarat" in diamond.quote ? Number(diamond.quote.pricePerCarat) || 0 : 0;
+  })();
+
+  const formStoneGrams = useMemo(() => {
+    if (!variantForm.stoneIncluded) return 0;
+    return (variantForm.stones || []).reduce((sum, stone) => sum + stoneWeightInGrams(stone), 0);
+  }, [variantForm.stoneIncluded, variantForm.stones]);
+
+  const flattenQuotedVariant = (form: VariantDraft): VariantDraft => {
+    const stones = form.stoneIncluded
+      ? quotedStones.map((item) => ({
+          ...item.stone,
+          rate:
+            isDiamondStone(item.stone.stoneType) && item.quote.ok && "diamondValue" in item.quote
+              ? item.quote.diamondValue
+              : Number(item.stone.rate) || 0,
+          pricePerCarat:
+            isDiamondStone(item.stone.stoneType) && item.quote.ok && "pricePerCarat" in item.quote
+              ? item.quote.pricePerCarat
+              : Number(item.stone.pricePerCarat) || 0,
+        }))
+      : [];
+    return {
+      ...form,
+      ...stonesToLegacy(stones),
+      stones,
+      stoneRate: quotedStoneRate,
+      pricePerCarat: quotedPricePerCarat,
+    };
+  };
+
+  const updateStoneLine = (key: string, patch: Partial<StoneLine>) => {
+    setVariantForm((current) => ({
+      ...current,
+      stones: (current.stones || []).map((stone) => {
+        if (stone.key !== key) return stone;
+        const next = { ...stone, ...patch };
+        if (patch.stoneType) {
+          const gem = gemstones.find((item) => item.name === patch.stoneType);
+          next.gemstoneTypeId = gem?.id || "";
+          if (!isDiamondStone(patch.stoneType)) {
+            next.diamondQualityId = "";
+            next.diamondCount = 1;
+            next.pricePerCarat = 0;
+            if (gem && Number(gem.defaultRate) > 0) next.rate = Number(gem.defaultRate);
+          }
+        }
+        return next;
       }),
-    [variantForm.stoneWeight, variantForm.diamondCount, selectedDiamondQuality],
-  );
-
-  const quotedStoneRate =
-    variantForm.stoneIncluded && variantForm.stoneType === "Diamond"
-      ? diamondQuote.ok
-        ? diamondQuote.diamondValue
-        : 0
-      : variantForm.stoneRate;
-  const quotedPricePerCarat =
-    variantForm.stoneIncluded && variantForm.stoneType === "Diamond" && diamondQuote.ok
-      ? diamondQuote.pricePerCarat
-      : variantForm.pricePerCarat;
+    }));
+  };
 
   const preview = useMemo(
     () =>
@@ -1114,8 +1204,15 @@ export default function ProductsPage() {
         makingChargeValue: variantForm.makingChargeValue,
         stoneRate: quotedStoneRate,
         goldPricePerGram: adjustedGoldPrice,
+        stones: quotedStones.map((item) => ({
+          stoneType: item.stone.stoneType,
+          weight: item.stone.weight,
+          rate: isDiamondStone(item.stone.stoneType) && item.quote.ok && "diamondValue" in item.quote
+            ? item.quote.diamondValue
+            : item.stone.rate,
+        })),
       }),
-    [variantForm, adjustedGoldPrice, quotedStoneRate],
+    [variantForm, adjustedGoldPrice, quotedStoneRate, quotedStones],
   );
 
   const variantsForSave = useMemo(() => {
@@ -1315,6 +1412,9 @@ export default function ProductsPage() {
       makingChargeType: variant.makingChargeType,
       makingChargeValue: Number(variant.makingChargeValue) || 0,
       stoneRate: Number(variant.stoneRate) || 0,
+      stones: Array.isArray(variant.stones)
+        ? variant.stones
+        : parseStonesJson("", variant),
       status: variant.status,
       imagePreview: variant.imageUrl || "",
       existingImageUrl: variant.imageUrl || "",
@@ -1403,13 +1503,9 @@ export default function ProductsPage() {
   const saveVariantToList = () => {
     if (!variantForm.metalId || !variantForm.purityId) return;
     if (!(Number(variantForm.grossWeight) > 0)) return;
-    if (variantForm.stoneIncluded && variantForm.stoneType === "Diamond" && !diamondQuote.ok) return;
+    if (variantForm.stoneIncluded && !diamondQuote.ok) return;
 
-    const variantFormQuoted = {
-      ...variantForm,
-      stoneRate: quotedStoneRate,
-      pricePerCarat: quotedPricePerCarat,
-    };
+    const variantFormQuoted = flattenQuotedVariant(variantForm);
 
     const duplicate = variants.some(
       (v) =>
@@ -1484,13 +1580,11 @@ export default function ProductsPage() {
     if (!enableVariants) {
       // Direct product: persist only the current metal/pricing form as a single entry
       if (!(Number(variantForm.grossWeight) > 0)) return;
-      if (variantForm.stoneIncluded && variantForm.stoneType === "Diamond" && !diamondQuote.ok) return;
+      if (variantForm.stoneIncluded && !diamondQuote.ok) return;
       const directKey = editingVariantKey || variants[0]?.key || emptyVariant().key;
       list = [
         {
-          ...variantForm,
-          stoneRate: quotedStoneRate,
-          pricePerCarat: quotedPricePerCarat,
+          ...flattenQuotedVariant(variantForm),
           key: directKey,
           id: variants[0]?.id || variantForm.id,
           imagePreview: draftPreview || variantForm.imagePreview || variants[0]?.existingImageUrl || "",
@@ -1501,14 +1595,12 @@ export default function ProductsPage() {
       if (draftFile) nextVariantFiles[directKey] = draftFile;
     } else if (editingVariantKey) {
       if (!(Number(variantForm.grossWeight) > 0)) return;
-      if (variantForm.stoneIncluded && variantForm.stoneType === "Diamond" && !diamondQuote.ok) return;
+      if (variantForm.stoneIncluded && !diamondQuote.ok) return;
       if (draftFile) nextVariantFiles[editingVariantKey] = draftFile;
       list = list.map((v) =>
         v.key === editingVariantKey
           ? {
-              ...variantForm,
-              stoneRate: quotedStoneRate,
-              pricePerCarat: quotedPricePerCarat,
+              ...flattenQuotedVariant(variantForm),
               key: editingVariantKey,
               id: v.id,
               imagePreview: draftPreview || variantForm.imagePreview || v.existingImageUrl || "",
@@ -1530,13 +1622,11 @@ export default function ProductsPage() {
         );
       if (
         canIncludeDraft &&
-        !(variantForm.stoneIncluded && variantForm.stoneType === "Diamond" && !diamondQuote.ok)
+        !(variantForm.stoneIncluded && !diamondQuote.ok)
       ) {
         const draftKey = emptyVariant().key;
         list.push({
-          ...variantForm,
-          stoneRate: quotedStoneRate,
-          pricePerCarat: quotedPricePerCarat,
+          ...flattenQuotedVariant(variantForm),
           key: draftKey,
           imagePreview: draftPreview || variantForm.imagePreview || "",
         });
@@ -1547,13 +1637,11 @@ export default function ProductsPage() {
     if (!list.length) {
       const draftKey = emptyVariant().key;
       list.push({
-        ...variantForm,
+        ...flattenQuotedVariant(variantForm),
         metalId: variantForm.metalId || firstMetal?.id || "",
         purityId: variantForm.purityId || firstPurity?.id || "",
         metalColor: variantForm.metalColor || firstMetal?.color || "",
         grossWeight: Number(variantForm.grossWeight) || 0,
-        stoneRate: quotedStoneRate || 0,
-        pricePerCarat: quotedPricePerCarat || 0,
         key: draftKey,
         imagePreview: draftPreview || variantForm.imagePreview || "",
       });
@@ -2034,25 +2122,19 @@ export default function ProductsPage() {
                       min="0"
                       value={
                         (() => {
-                          const gross = variantForm.grossWeight || 0;
-                          const stone = variantForm.stoneIncluded ? variantForm.stoneWeight || 0 : 0;
-                          const stoneInGrams = variantForm.stoneIncluded && variantForm.stoneType === "Diamond"
-                            ? stone / 5
-                            : stone;
-                          const net = gross - stoneInGrams;
+                          const net = (variantForm.grossWeight || 0) - formStoneGrams;
                           return net > 0 ? Number(net.toFixed(3)) : "";
                         })()
                       }
                       onChange={(e) => {
                         const newNet = Number(e.target.value) || 0;
                         setVariantForm((c) => {
-                          const stone = c.stoneIncluded ? c.stoneWeight || 0 : 0;
-                          const stoneInGrams = c.stoneIncluded && c.stoneType === "Diamond"
-                            ? stone / 5
-                            : stone;
+                          const grams = c.stoneIncluded
+                            ? (c.stones || []).reduce((sum, stone) => sum + stoneWeightInGrams(stone), 0)
+                            : 0;
                           return {
                             ...c,
-                            grossWeight: Number((newNet + stoneInGrams).toFixed(3)),
+                            grossWeight: Number((newNet + grams).toFixed(3)),
                           };
                         });
                       }}
@@ -2084,10 +2166,18 @@ export default function ProductsPage() {
                     <select
                       value={String(variantForm.stoneIncluded)}
                       onChange={(e) =>
-                        setVariantForm((c) => ({
-                          ...c,
-                          stoneIncluded: e.target.value === "true",
-                        }))
+                        setVariantForm((c) => {
+                          const included = e.target.value === "true";
+                          return {
+                            ...c,
+                            stoneIncluded: included,
+                            stones: included
+                              ? c.stones?.length
+                                ? c.stones
+                                : [emptyStoneLine()]
+                              : [],
+                          };
+                        })
                       }
                     >
                       <option value="false">Without stone</option>
@@ -2111,204 +2201,191 @@ export default function ProductsPage() {
                   </div>
                 </div>
 
-                 {variantForm.stoneIncluded ? (
-                  <>
-                    {variantForm.stoneType === "Diamond" ? (
-                      <>
-                        <div className="field-row4">
-                          <div className="field">
-                            <label>Stone type</label>
-                            <select
-                              value={variantForm.stoneType}
-                              onChange={(e) =>
-                                setVariantForm((c) => ({
-                                  ...c,
-                                  stoneType: e.target.value,
-                                  diamondQualityId: "",
-                                  diamondCount: 1,
-                                  pricePerCarat: 0,
-                                  stoneRate: 0,
-                                }))
-                              }
-                            >
-                              <option>Diamond</option>
-                              <option>Ruby</option>
-                              <option>Emerald</option>
-                              <option>Sapphire</option>
-                              <option>Pearl</option>
-                            </select>
-                          </div>
-                          <div className="field">
-                            <label>Total carat weight</label>
-                            <input
-                              type="number"
-                              step="0.001"
-                              min="0"
-                              placeholder="2.000"
-                              value={
-                                Number.isFinite(variantForm.stoneWeight)
-                                  ? variantForm.stoneWeight
-                                  : ""
-                              }
-                              onChange={(e) =>
-                                setVariantForm((c) => ({
-                                  ...c,
-                                  stoneWeight: Number(e.target.value),
-                                }))
-                              }
-                            />
-                          </div>
-                          <div className="field">
-                            <label>No. of diamonds</label>
-                            <input
-                              type="number"
-                              step="1"
-                              min="1"
-                              placeholder="50"
-                              value={variantForm.diamondCount || ""}
-                              onChange={(e) =>
-                                setVariantForm((c) => ({
-                                  ...c,
-                                  diamondCount: Number(e.target.value),
-                                }))
-                              }
-                            />
-                            <div className="hint">Price uses average size: total ct ÷ this count.</div>
-                          </div>
-                          <div className="field">
-                            <label>Stone weight (g)</label>
-                            <input
-                              type="text"
-                              readOnly
-                              disabled
-                              value={variantForm.stoneWeight ? (variantForm.stoneWeight / 5).toFixed(3) : "0.000"}
-                            />
-                          </div>
-                        </div>
-                        <div className="field-row">
-                          <div className="field">
-                            <label>Diamond quality</label>
-                            <select
-                              value={variantForm.diamondQualityId || ""}
-                              onChange={(e) =>
-                                setVariantForm((c) => ({
-                                  ...c,
-                                  diamondQualityId: e.target.value,
-                                }))
-                              }
-                            >
-                              <option value="">Select color + clarity…</option>
-                              {diamondQualities.map((quality) => (
-                                <option key={quality.id} value={quality.id}>
-                                  {quality.name}
-                                </option>
-                              ))}
-                            </select>
-                            {diamondQualities.length === 0 ? (
-                              <div className="hint">
-                                Add diamond qualities and pricing slabs under Metals &amp; purity → Diamond Pricing.
+                {variantForm.stoneIncluded ? (
+                  <div style={{ display: "grid", gap: 14 }}>
+                    {(variantForm.stones?.length ? variantForm.stones : [emptyStoneLine()]).map((stone) => {
+                      const quoted = quotedStones.find((item) => item.stone.key === stone.key);
+                      const quote = quoted?.quote;
+                      const diamond = isDiamondStone(stone.stoneType);
+                      return (
+                        <div
+                          key={stone.key}
+                          style={{
+                            border: "1px solid var(--line, #e6e4e3)",
+                            padding: 12,
+                            display: "grid",
+                            gap: 10,
+                          }}
+                        >
+                          <div className="field-row">
+                            <div className="field">
+                              <label>Stone type</label>
+                              <select
+                                value={stone.stoneType}
+                                onChange={(e) => updateStoneLine(stone.key, { stoneType: e.target.value })}
+                              >
+                                {stoneOptions.map((name) => (
+                                  <option key={name} value={name}>
+                                    {name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            {diamond ? (
+                              <div className="field">
+                                <label>Total carat weight</label>
+                                <input
+                                  type="number"
+                                  step="0.001"
+                                  min="0"
+                                  placeholder="2.000"
+                                  value={Number.isFinite(stone.weight) ? stone.weight : ""}
+                                  onChange={(e) =>
+                                    updateStoneLine(stone.key, { weight: Number(e.target.value) })
+                                  }
+                                />
                               </div>
-                            ) : null}
+                            ) : (
+                              <div className="field">
+                                <label>Stone weight (g)</label>
+                                <input
+                                  type="number"
+                                  step="0.001"
+                                  min="0"
+                                  value={Number.isFinite(stone.weight) ? stone.weight : ""}
+                                  onChange={(e) =>
+                                    updateStoneLine(stone.key, { weight: Number(e.target.value) })
+                                  }
+                                />
+                              </div>
+                            )}
                           </div>
-                          <div className="field">
-                            <label>Cut / shape</label>
-                            <select
-                              value={variantForm.diamondCategory}
-                              onChange={(e) =>
-                                setVariantForm((c) => ({
-                                  ...c,
-                                  diamondCategory: e.target.value,
+                          {diamond ? (
+                            <>
+                              <div className="field-row4">
+                                <div className="field">
+                                  <label>No. of diamonds</label>
+                                  <input
+                                    type="number"
+                                    step="1"
+                                    min="1"
+                                    placeholder="50"
+                                    value={stone.diamondCount || ""}
+                                    onChange={(e) =>
+                                      updateStoneLine(stone.key, {
+                                        diamondCount: Number(e.target.value),
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div className="field">
+                                  <label>Stone weight (g)</label>
+                                  <input
+                                    type="text"
+                                    readOnly
+                                    disabled
+                                    value={stone.weight ? (stone.weight / 5).toFixed(3) : "0.000"}
+                                  />
+                                </div>
+                                <div className="field">
+                                  <label>Diamond quality</label>
+                                  <select
+                                    value={stone.diamondQualityId || ""}
+                                    onChange={(e) =>
+                                      updateStoneLine(stone.key, { diamondQualityId: e.target.value })
+                                    }
+                                  >
+                                    <option value="">Select color + clarity…</option>
+                                    {diamondQualities.map((quality) => (
+                                      <option key={quality.id} value={quality.id}>
+                                        {quality.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="field">
+                                  <label>Cut / shape</label>
+                                  <select
+                                    value={stone.diamondCategory}
+                                    onChange={(e) =>
+                                      updateStoneLine(stone.key, { diamondCategory: e.target.value })
+                                    }
+                                  >
+                                    {Array.from(
+                                      new Set([
+                                        ...DEFAULT_DIAMOND_CUTS,
+                                        ...(stone.diamondCategory ? [stone.diamondCategory] : []),
+                                      ]),
+                                    ).map((cutName) => (
+                                      <option key={cutName} value={cutName}>
+                                        {cutName}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+                              {quote && "ok" in quote && quote.ok && "averageCarat" in quote ? (
+                                <div className="hint">
+                                  Avg {quote.averageCarat.toFixed(4)} ct/stone ({quote.averageCents.toFixed(2)} cents)
+                                  {" "}→ {quote.qualityName} slab {formatCentsRange(quote.slabFrom, quote.slabTo)}
+                                  {" "}→ {formatINR(quote.pricePerCarat)}/ct
+                                  {" "}→ diamond value {formatINR(quote.diamondValue)}
+                                </div>
+                              ) : (
+                                <div className="hint" style={{ color: "var(--red)" }}>
+                                  {quote && "message" in quote ? String(quote.message) : "Select diamond quality to quote."}
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="field">
+                              <label>Stone rate (₹ / g)</label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={Number.isFinite(stone.rate) ? stone.rate : ""}
+                                onChange={(e) =>
+                                  updateStoneLine(stone.key, { rate: Number(e.target.value) })
+                                }
+                              />
+                            </div>
+                          )}
+                          {(variantForm.stones || []).length > 1 ? (
+                            <button
+                              type="button"
+                              className="btn small"
+                              onClick={() =>
+                                setVariantForm((current) => ({
+                                  ...current,
+                                  stones: current.stones.filter((item) => item.key !== stone.key),
                                 }))
                               }
                             >
-                              {Array.from(
-                                new Set([
-                                  ...DEFAULT_DIAMOND_CUTS,
-                                  ...(variantForm.diamondCategory ? [variantForm.diamondCategory] : []),
-                                ]),
-                              ).map((cutName) => (
-                                <option key={cutName} value={cutName}>
-                                  {cutName}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
+                              Remove stone
+                            </button>
+                          ) : null}
                         </div>
-                        {diamondQuote.ok ? (
-                          <div className="hint">
-                            Avg {diamondQuote.averageCarat.toFixed(4)} ct/stone ({diamondQuote.averageCents.toFixed(2)} cents)
-                            {" "}→ {diamondQuote.qualityName} slab {formatCentsRange(diamondQuote.slabFrom, diamondQuote.slabTo)}
-                            {" "}→ {formatINR(diamondQuote.pricePerCarat)}/ct
-                            {" "}→ diamond value {formatINR(diamondQuote.diamondValue)}
-                          </div>
-                        ) : (
-                          <div className="hint" style={{ color: "var(--red)" }}>
-                            {diamondQuote.message}
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <div className="field-row3">
-                        <div className="field">
-                          <label>Stone type</label>
-                          <select
-                            value={variantForm.stoneType}
-                            onChange={(e) =>
-                              setVariantForm((c) => ({
-                                ...c,
-                                stoneType: e.target.value,
-                                diamondQualityId: "",
-                              }))
-                            }
-                          >
-                            <option>Diamond</option>
-                            <option>Ruby</option>
-                            <option>Emerald</option>
-                            <option>Sapphire</option>
-                            <option>Pearl</option>
-                          </select>
-                        </div>
-                        <div className="field">
-                          <label>Stone weight (g)</label>
-                          <input
-                            type="number"
-                            step="0.001"
-                            min="0"
-                            value={
-                              Number.isFinite(variantForm.stoneWeight)
-                                ? variantForm.stoneWeight
-                                : ""
-                            }
-                            onChange={(e) =>
-                              setVariantForm((c) => ({
-                                ...c,
-                                stoneWeight: Number(e.target.value),
-                              }))
-                            }
-                          />
-                        </div>
-                        <div className="field">
-                          <label>Stone rate (₹ / g)</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            value={
-                              Number.isFinite(variantForm.stoneRate)
-                                ? variantForm.stoneRate
-                                : ""
-                            }
-                            onChange={(e) =>
-                              setVariantForm((c) => ({
-                                ...c,
-                                stoneRate: Number(e.target.value),
-                              }))
-                            }
-                          />
-                        </div>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() =>
+                        setVariantForm((current) => ({
+                          ...current,
+                          stones: [...(current.stones || []), emptyStoneLine(stoneOptions[1] || "Diamond")],
+                        }))
+                      }
+                    >
+                      Add another stone
+                    </button>
+                    {gemstones.length === 0 ? (
+                      <div className="hint">
+                        Gemstones (Ruby, Emerald, etc.) are managed under Metals &amp; purity → Gemstones.
                       </div>
-                    )}
-                  </>
+                    ) : null}
+                  </div>
                 ) : null}
 
                 <div className="field-row">
@@ -2385,11 +2462,7 @@ export default function ProductsPage() {
                       type="button"
                       className="btn primary"
                       onClick={saveVariantToList}
-                      disabled={
-                        variantForm.stoneIncluded &&
-                        variantForm.stoneType === "Diamond" &&
-                        !diamondQuote.ok
-                      }
+                      disabled={variantForm.stoneIncluded && !diamondQuote.ok}
                     >
                       {editingVariantKey ? "Update variant" : "Add this variant to list"}
                     </button>
@@ -2419,6 +2492,7 @@ export default function ProductsPage() {
                         makingChargeValue: variant.makingChargeValue,
                         stoneRate: variant.stoneRate,
                         goldPricePerGram,
+                        stones: variant.stones,
                       }).total;
                       const thumb = variant.imagePreview || variant.existingImageUrl;
                       const inList = variants.some((v) => v.key === variant.key);
@@ -2456,7 +2530,13 @@ export default function ProductsPage() {
                                   {formatGrams(
                                     variant.grossWeight -
                                       (variant.stoneIncluded
-                                        ? (variant.stoneType === "Diamond" ? (variant.stoneWeight || 0) / 5 : variant.stoneWeight || 0)
+                                        ? (variant.stones || []).reduce(
+                                            (sum, stone) => sum + stoneWeightInGrams(stone),
+                                            0,
+                                          ) ||
+                                          (variant.stoneType === "Diamond"
+                                            ? (variant.stoneWeight || 0) / 5
+                                            : variant.stoneWeight || 0)
                                         : 0)
                                   )}
                                   )
@@ -2543,54 +2623,23 @@ export default function ProductsPage() {
                 <span className="l">Making charge</span>
                 <span className="v">{formatINR(preview.makingCharge)}</span>
               </div>
-              {variantForm.stoneIncluded && variantForm.stoneType === "Diamond" ? (
-                <>
-                  <div className="summary-row">
-                    <span className="l">Total carat</span>
-                    <span className="v">{(variantForm.stoneWeight || 0).toFixed(3)} ct</span>
-                  </div>
-                  <div className="summary-row">
-                    <span className="l">No. of diamonds</span>
-                    <span className="v">{variantForm.diamondCount || 0}</span>
-                  </div>
-                  <div className="summary-row">
-                    <span className="l">Avg size</span>
-                    <span className="v">
-                      {diamondQuote.averageCarat.toFixed(4)} ct ({diamondQuote.averageCents.toFixed(2)} ¢)
-                    </span>
-                  </div>
-                  <div className="summary-row">
-                    <span className="l">Quality</span>
-                    <span className="v">{selectedDiamondQuality?.name || "—"}</span>
-                  </div>
-                  {diamondQuote.ok ? (
-                    <>
-                      <div className="summary-row">
-                        <span className="l">Pricing slab</span>
-                        <span className="v">{formatCentsRange(diamondQuote.slabFrom, diamondQuote.slabTo)}</span>
-                      </div>
-                      <div className="summary-row">
-                        <span className="l">Price / ct</span>
-                        <span className="v">{formatINR(diamondQuote.pricePerCarat)}</span>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="summary-row">
-                      <span className="l">Pricing slab</span>
-                      <span className="v" style={{ color: "var(--red)" }}>Not matched</span>
+              {variantForm.stoneIncluded
+                ? quotedStones.map(({ stone, quote }) => (
+                    <div className="summary-row" key={stone.key}>
+                      <span className="l">{stone.stoneType || "Stone"}</span>
+                      <span className="v">
+                        {isDiamondStone(stone.stoneType)
+                          ? `${(stone.weight || 0).toFixed(3)} ct`
+                          : formatGrams(stone.weight)}
+                        {isDiamondStone(stone.stoneType) && quote.ok && "diamondValue" in quote
+                          ? ` · ${formatINR(quote.diamondValue)}`
+                          : !isDiamondStone(stone.stoneType)
+                            ? ` · ${formatINR((stone.weight || 0) * (stone.rate || 0))}`
+                            : ""}
+                      </span>
                     </div>
-                  )}
-                  <div className="summary-row">
-                    <span className="l">Stone weight (g)</span>
-                    <span className="v">{((variantForm.stoneWeight || 0) / 5).toFixed(3)} g</span>
-                  </div>
-                </>
-              ) : variantForm.stoneIncluded ? (
-                <div className="summary-row">
-                  <span className="l">Stone weight (g)</span>
-                  <span className="v">{formatGrams(variantForm.stoneWeight)}</span>
-                </div>
-              ) : null}
+                  ))
+                : null}
               <div className="summary-row">
                 <span className="l">Stone charges</span>
                 <span className="v">{formatINR(preview.stoneCharge)}</span>
@@ -2609,9 +2658,7 @@ export default function ProductsPage() {
                     (enableVariants
                       ? variantsForSave.length === 0
                       : !(Number(variantForm.grossWeight) > 0) ||
-                        (variantForm.stoneIncluded &&
-                          variantForm.stoneType === "Diamond" &&
-                          !diamondQuote.ok))
+                        (variantForm.stoneIncluded && !diamondQuote.ok))
                   }
                 >
                   {busy

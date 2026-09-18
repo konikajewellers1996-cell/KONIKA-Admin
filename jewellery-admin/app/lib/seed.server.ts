@@ -59,6 +59,20 @@ export async function ensureAppSeed() {
 
   await ensureAllCollectionsCollection();
 
+  const defaultGemstones = [
+    { name: "Ruby", color: "Red", defaultRate: 0 },
+    { name: "Emerald", color: "Green", defaultRate: 0 },
+    { name: "Sapphire", color: "Blue", defaultRate: 0 },
+    { name: "Pearl", color: "White", defaultRate: 0 },
+  ];
+  for (const gem of defaultGemstones) {
+    await prisma.gemstoneType.upsert({
+      where: { name: gem.name },
+      update: {},
+      create: { ...gem, status: "Active" },
+    });
+  }
+
   const metalCount = await prisma.metalType.count();
   if (metalCount > 0) return;
 
