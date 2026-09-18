@@ -87,6 +87,7 @@ model Product {
   availableSizes   String           @default("[]")
   isRing           Boolean          @default(false)
   pricingMode      String           @default("auto")
+  discountsJson    String           @default("[]")
   shopifyProductId String?
   status           String           @default("Active")
   createdAt        DateTime         @default(now())
@@ -166,4 +167,20 @@ model DiamondPricingSlab {
   quality       DiamondQuality @relation(fields: [qualityId], references: [id], onDelete: Cascade)
 
   @@index([qualityId, status])
+}
+
+model DiscountRule {
+  id             String   @id @default(cuid())
+  name           String
+  code           String   @default("")
+  isCoupon       Boolean  @default(false)
+  targets        String   @default("[\"making\"]")
+  valueType      String   @default("percent")
+  value          Float    @default(0)
+  collectionIds  String   @default("[]")
+  productIds     String   @default("[]")
+  applyAll       Boolean  @default(false)
+  status         String   @default("Active")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }

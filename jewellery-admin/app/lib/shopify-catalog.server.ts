@@ -2,8 +2,32 @@ import { priceToShopifyString, calculateProductPrice, type MakingChargeType } fr
 import { htmlToPlainText, normalizeImageUrl } from "./text";
 import { syncProductJewelleryMetafields } from "./shopify-metafields.server";
 import { parseStonesJson } from "./stones";
+import {
+  mergedDiscountLines,
+  parseDiscountLines,
+  parseDiscountTargets,
+  parseStringIdList,
+  type CatalogDiscountRule,
+} from "./discounts";
 import prisma from "../db.server";
 
+
+async function catalogDiscountRules(): Promise<CatalogDiscountRule[]> {
+  const rules = await prisma.discountRule.findMany({ where: { status: "Active" } });
+  return rules.map((rule) => ({
+    id: rule.id,
+    name: rule.name,
+    code: rule.code,
+    isCoupon: rule.isCoupon,
+    targets: parseDiscountTargets(rule.targets),
+    valueType: rule.valueType === "flat" ? "flat" : "percent",
+    value: rule.value,
+    collectionIds: parseStringIdList(rule.collectionIds),
+    productIds: parseStringIdList(rule.productIds),
+    applyAll: rule.applyAll,
+    status: rule.status,
+  }));
+}
 
 type GraphqlClient = (
   query: string,
@@ -1292,6 +1316,7 @@ export async function syncSingleProductToShopify(
 ) {
   const settings = await prisma.appSetting.findUnique({ where: { id: "default" } });
   const goldPricePerGram = settings?.goldPricePerGram ?? 6500;
+  const rules = await catalogDiscountRules();
 
   const product = await prisma.product.findUnique({
     where: { id: productId },
@@ -1390,6 +1415,12 @@ export async function syncSingleProductToShopify(
           pricingMode: product.pricingMode,
           manualPrice: variant.manualPrice,
           wastageType: variant.wastageType,
+          discounts: mergedDiscountLines(
+            parseDiscountLines(product.discountsJson),
+            rules,
+            product.id,
+            product.collections.map((item) => item.id),
+          ),
         }).total,
         status: variant.status,
       })),

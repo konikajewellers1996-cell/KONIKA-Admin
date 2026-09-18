@@ -1,3 +1,5 @@
+import { applyAmountDiscount, type DiscountLine } from "./discounts";
+
 export type MakingChargeType = "percent" | "fixed" | "flat" | "per_gram";
 export type PricingMode = "auto" | "manual";
 export type RateMode = "flat" | "per_gram";
@@ -26,6 +28,7 @@ export type PriceInput = {
   gstPercent?: number;
   pricingMode?: PricingMode | string;
   manualPrice?: number;
+  discounts?: DiscountLine[];
 };
 
 export type PriceBreakdown = {
@@ -36,6 +39,10 @@ export type PriceBreakdown = {
   goldValue: number;
   makingCharge: number;
   stoneCharge: number;
+  diamondCharge: number;
+  discountMaking: number;
+  discountWastage: number;
+  discountDiamond: number;
   otherCharges: number;
   gstPercent: number;
   gstValue: number;
@@ -80,6 +87,10 @@ export function calculateProductPrice(input: PriceInput): PriceBreakdown {
       goldValue: 0,
       makingCharge: 0,
       stoneCharge: 0,
+      diamondCharge: 0,
+      discountMaking: 0,
+      discountWastage: 0,
+      discountDiamond: 0,
       otherCharges: 0,
       gstPercent: 0,
       gstValue: 0,
@@ -100,13 +111,16 @@ export function calculateProductPrice(input: PriceInput): PriceBreakdown {
 
   let stoneWeightInGrams = 0;
   let stoneCharge = 0;
+  let diamondCharge = 0;
 
   if (stoneLines.length) {
     for (const stone of stoneLines) {
       const weight = Number(stone.weight) || 0;
       const isDiamond = String(stone.stoneType).toLowerCase() === "diamond";
       stoneWeightInGrams += isDiamond ? weight * 0.2 : weight;
-      stoneCharge += stoneLineCharge(stone);
+      const charge = stoneLineCharge(stone);
+      stoneCharge += charge;
+      if (isDiamond) diamondCharge += charge;
     }
   } else {
     const stoneWeight = input.stoneIncluded ? Number(input.stoneWeight) || 0 : 0;
@@ -120,6 +134,7 @@ export function calculateProductPrice(input: PriceInput): PriceBreakdown {
         ? stoneRate
         : stoneWeight * stoneRate
       : 0;
+    diamondCharge = input.stoneIncluded && input.stoneType === "Diamond" ? stoneCharge : 0;
   }
 
   const computedNet = Math.max(grossWeight - stoneWeightInGrams, 0);
@@ -138,19 +153,39 @@ export function calculateProductPrice(input: PriceInput): PriceBreakdown {
   } else {
     wastageValue = wastageValueInput;
   }
-  const chargeableGoldWeight = netGoldWeight + extraGoldGrams;
-  const netGoldValue = netGoldWeight * goldPricePerGram;
-  const goldValue = chargeableGoldWeight * goldPricePerGram;
 
   let makingCharge = 0;
+  const goldValueBeforeMaking =
+    wastageType === "percent"
+      ? (netGoldWeight + extraGoldGrams) * goldPricePerGram
+      : netGoldWeight * goldPricePerGram;
   if (makingType === "percent") {
-    makingCharge = goldValue * (makingChargeValue / 100);
+    makingCharge = goldValueBeforeMaking * (makingChargeValue / 100);
   } else if (makingType === "per_gram") {
     makingCharge = netGoldWeight * makingChargeValue;
   } else {
     makingCharge = makingChargeValue;
   }
 
+  const discounts = input.discounts || [];
+  const makingBefore = makingCharge;
+  const wastageBefore = wastageValue;
+  const diamondBefore = diamondCharge;
+  makingCharge = applyAmountDiscount(makingCharge, discounts, "making");
+  wastageValue = applyAmountDiscount(wastageValue, discounts, "wastage");
+  const discountedDiamond = applyAmountDiscount(diamondCharge, discounts, "diamond");
+  const gemCharge = Math.max(0, stoneCharge - diamondCharge);
+  stoneCharge = gemCharge + discountedDiamond;
+  if (wastageType === "percent" && wastageBefore > 0) {
+    extraGoldGrams = extraGoldGrams * (wastageValue / wastageBefore);
+  }
+
+  const chargeableGoldWeight = netGoldWeight + extraGoldGrams;
+  const netGoldValue = netGoldWeight * goldPricePerGram;
+  const goldValue =
+    wastageType === "percent"
+      ? chargeableGoldWeight * goldPricePerGram
+      : netGoldValue;
   const wastageInGold = wastageType === "percent" ? 0 : wastageValue;
   const subtotal = goldValue + makingCharge + stoneCharge + otherCharges + wastageInGold;
   const gstValue = subtotal * (resolvedGst / 100);
@@ -164,6 +199,10 @@ export function calculateProductPrice(input: PriceInput): PriceBreakdown {
     goldValue,
     makingCharge,
     stoneCharge,
+    diamondCharge: discountedDiamond,
+    discountMaking: Math.max(0, makingBefore - makingCharge),
+    discountWastage: Math.max(0, wastageBefore - wastageValue),
+    discountDiamond: Math.max(0, diamondBefore - discountedDiamond),
     otherCharges,
     gstPercent: resolvedGst,
     gstValue,

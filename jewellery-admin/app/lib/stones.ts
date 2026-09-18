@@ -40,8 +40,11 @@ export function stoneWeightInGrams(stone: Pick<StoneLine, "stoneType" | "weight"
 export function stoneChargeForLine(
   stone: Pick<StoneLine, "stoneType" | "weight" | "rate" | "rateMode">,
 ) {
+  const weight = Number(stone.weight) || 0;
   const rate = Number(stone.rate) || 0;
-  return rate;
+  if (isDiamondStone(stone.stoneType)) return rate;
+  if (stone.rateMode === "flat") return rate;
+  return weight * rate;
 }
 
 export function parseStonesJson(

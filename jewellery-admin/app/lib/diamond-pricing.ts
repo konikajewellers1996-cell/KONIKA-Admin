@@ -100,6 +100,28 @@ export function qualityLabel(color: string, clarity: string) {
   return `${color.trim()} ${clarity.trim()}`.replace(/\s+/g, " ").trim();
 }
 
+export function diamondColorSeriesBase(color: string) {
+  return String(color || "")
+    .trim()
+    .replace(/-\d+$/, "");
+}
+
+export function nextSuffixedDiamondColor(existingColors: string[], requestedColor: string) {
+  const base = diamondColorSeriesBase(requestedColor);
+  if (!base) return requestedColor.trim();
+  const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const series = existingColors
+    .map((item) => String(item || "").trim())
+    .filter((item) => item === base || new RegExp(`^${escaped}-\\d+$`).test(item));
+  if (!series.length) return base;
+  const nums = series.map((item) => {
+    if (item === base) return 1;
+    const match = item.match(/-(\d+)$/);
+    return match ? Number(match[1]) || 1 : 1;
+  });
+  return `${base}-${Math.max(...nums) + 1}`;
+}
+
 export function caratToCents(carat: number) {
   return (Number(carat) || 0) * 100;
 }

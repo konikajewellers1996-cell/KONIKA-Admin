@@ -46,6 +46,18 @@ import {
 import { ALL_COLLECTIONS_NAME } from "../lib/collections";
 import { ensureAllCollectionsCollection } from "../lib/seed.server";
 import { htmlToPlainText, normalizeImageUrl } from "../lib/text";
+import { AmountField, amountModeFromCharge } from "../lib/amount-field";
+import {
+  emptyDiscountLine,
+  mergedDiscountLines,
+  parseDiscountLines,
+  parseDiscountTargets,
+  parseStringIdList,
+  serializeDiscountLines,
+  type CatalogDiscountRule,
+  type DiscountLine,
+  type DiscountTarget,
+} from "../lib/discounts";
 import {
   emptyStoneLine,
   isDiamondStone,
@@ -106,6 +118,7 @@ type ProductFormState = {
   status: string;
   pricingMode: PricingMode;
   isRing: boolean;
+  discounts: DiscountLine[];
 };
 
 const RING_SIZE_OPTIONS = Array.from({ length: 26 }, (_, i) => String(i + 5));
@@ -189,6 +202,7 @@ function variantPriceInput(
   },
   goldPricePerGram: number,
   pricingMode: PricingMode | string = "auto",
+  discounts: DiscountLine[] = [],
 ) {
   return {
     grossWeight: variant.grossWeight,
@@ -207,6 +221,7 @@ function variantPriceInput(
     gstPercent: variant.gstPercent,
     pricingMode,
     manualPrice: variant.manualPrice,
+    discounts,
   };
 }
 
@@ -308,12 +323,13 @@ const emptyProductForm = (collectionIds: string[] = []): ProductFormState => ({
   status: "Active",
   pricingMode: "auto",
   isRing: false,
+  discounts: [],
 });
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
 
-  const [settings, collections, metals, purities, products, diamondQualities, gemstones] = await Promise.all([
+  const [settings, collections, metals, purities, products, diamondQualities, gemstones, discountRulesRaw] = await Promise.all([
     prisma.appSetting.findUnique({ where: { id: "default" } }),
     prisma.collection.findMany({
       include: { parent: true },
@@ -348,9 +364,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       where: { status: "Active" },
       orderBy: { name: "asc" },
     }),
+    prisma.discountRule.findMany({ where: { status: "Active" } }),
   ]);
 
   const goldPricePerGram = settings?.goldPricePerGram ?? 6500;
+  const discountRules: CatalogDiscountRule[] = discountRulesRaw.map((rule) => ({
+    id: rule.id,
+    name: rule.name,
+    code: rule.code,
+    isCoupon: rule.isCoupon,
+    targets: parseDiscountTargets(rule.targets),
+    valueType: rule.valueType === "flat" ? "flat" : "percent",
+    value: rule.value,
+    collectionIds: parseStringIdList(rule.collectionIds),
+    productIds: parseStringIdList(rule.productIds),
+    applyAll: rule.applyAll,
+    status: rule.status,
+  }));
 
   // De-duplicate products by SKU / shopifyProductId
   const seenSkus = new Map<string, (typeof products)[0]>();
@@ -386,6 +416,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const uniqueProducts = Array.from(seenSkus.values());
 
   const catalog = uniqueProducts.map((product) => {
+    const productDiscounts = mergedDiscountLines(
+      parseDiscountLines(product.discountsJson),
+      discountRules,
+      product.id,
+      product.collections.map((item) => item.id),
+    );
     const prices = product.variants.map((variant) =>
       calculateProductPrice(
         variantPriceInput(
@@ -398,6 +434,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             ? (goldPricePerGram / 0.916) * variant.purity.purityValue
             : goldPricePerGram,
           product.pricingMode,
+          productDiscounts,
         ),
       ).total,
     );
@@ -419,6 +456,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       dimensionHeight: product.dimensionHeight || "",
       availableSizes: parseAvailableSizes(product.availableSizes),
       isRing: Boolean(product.isRing),
+      discounts: parseDiscountLines(product.discountsJson),
       collectionIds: product.collections.map((c) => c.id),
       collection: product.collections.map((c) => c.name).join(", ") || "—",
       status: product.status,
@@ -471,13 +509,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               ? (goldPricePerGram / 0.916) * variant.purity.purityValue
               : goldPricePerGram,
             product.pricingMode,
+            productDiscounts,
           ),
         ).total,
       })),
     };
   });
 
-  return { goldPricePerGram, collections, metals, purities, catalog, diamondQualities, gemstones };
+  return { goldPricePerGram, collections, metals, purities, catalog, diamondQualities, gemstones, discountRules };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -777,6 +816,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const collectionIds = form.getAll("collectionIds").map(String);
     const status = isAutosave ? "Draft" : String(form.get("status") || "Active");
     const pricingMode = normalizePricingMode(String(form.get("pricingMode") || "auto"));
+    const discountsJson = serializeDiscountLines(parseDiscountLines(String(form.get("discountsJson") || "[]")));
     const variantsRaw = String(form.get("variantsJson") || "[]");
 
     if (!isAutosave && (!sku || !name)) {
@@ -1060,6 +1100,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           availableSizes: availableSizesJson,
           isRing,
           pricingMode,
+          discountsJson,
           status,
           collections: {
             set: mergedCollectionIds.map((id) => ({ id })),
@@ -1083,6 +1124,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           availableSizes: availableSizesJson,
           isRing,
           pricingMode,
+          discountsJson,
           status,
           variants: { create: variantCreateData },
           collections: {
@@ -1136,7 +1178,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function ProductsPage() {
-  const { goldPricePerGram, collections, metals, purities, catalog, diamondQualities, gemstones } =
+  const { goldPricePerGram, collections, metals, purities, catalog, diamondQualities, gemstones, discountRules } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -1407,8 +1449,14 @@ export default function ProductsPage() {
             : item.stone.rate,
           rateMode: item.stone.rateMode,
         })),
+        discounts: mergedDiscountLines(
+          productForm.discounts,
+          discountRules,
+          editingId,
+          selectedCollections.map((item) => item.id),
+        ),
       }),
-    [variantForm, adjustedGoldPrice, quotedStoneRate, quotedStones, productForm.pricingMode],
+    [variantForm, adjustedGoldPrice, quotedStoneRate, quotedStones, productForm.pricingMode, productForm.discounts, discountRules, editingId, selectedCollections],
   );
 
   const variantsForSave = useMemo(() => {
@@ -1589,6 +1637,7 @@ export default function ProductsPage() {
       status: product.status,
       pricingMode: normalizePricingMode(product.pricingMode),
       isRing: Boolean(product.isRing),
+      discounts: product.discounts || [],
     });
     const selectedColls = product.collectionIds
       .map((id) => {
@@ -1762,6 +1811,7 @@ export default function ProductsPage() {
     fd.set("dimensionHeight", productForm.dimensionHeight);
     fd.set("availableSizes", JSON.stringify(productForm.availableSizes));
     fd.set("isRing", String(productForm.isRing));
+    fd.set("discountsJson", serializeDiscountLines(productForm.discounts));
     fd.set("pricingMode", productForm.pricingMode);
     fd.set("status", "Draft");
     selectedCollections.forEach((c) => fd.append("collectionIds", c.id));
@@ -2219,102 +2269,7 @@ export default function ProductsPage() {
                 </div>
                 <input type="hidden" name="availableSizes" value={JSON.stringify(productForm.availableSizes)} />
                 <input type="hidden" name="isRing" value={String(productForm.isRing)} />
-                <div className="field">
-                  <label>Is this a ring?</label>
-                  <div className="radio-inline">
-                    <label>
-                      <input
-                        type="radio"
-                        name="is-ring"
-                        checked={!productForm.isRing}
-                        onChange={() =>
-                          setProductForm((c) => ({ ...c, isRing: false, availableSizes: [] }))
-                        }
-                      />
-                      No
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="is-ring"
-                        checked={productForm.isRing}
-                        onChange={() => setProductForm((c) => ({ ...c, isRing: true }))}
-                      />
-                      Yes
-                    </label>
-                  </div>
-                </div>
-                {productForm.isRing ? (
-                <div className="field">
-                  <label>Ring size variants</label>
-                  <div className="hint" style={{ marginBottom: 8 }}>
-                    Select every size this ring should be available in. Each size is a storefront size variant.
-                  </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {RING_SIZE_OPTIONS.map((size) => {
-                      const selected = productForm.availableSizes.includes(size);
-                      return (
-                        <button
-                          key={size}
-                          type="button"
-                          className={`btn small${selected ? " primary" : ""}`}
-                          onClick={() =>
-                            setProductForm((current) => ({
-                              ...current,
-                              availableSizes: selected
-                                ? current.availableSizes.filter((item) => item !== size)
-                                : [...current.availableSizes, size].sort(
-                                    (a, b) => Number(a) - Number(b) || a.localeCompare(b),
-                                  ),
-                            }))
-                          }
-                        >
-                          {size}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div className="field-row" style={{ marginTop: 10 }}>
-                    <div className="field">
-                      <label>Add custom size</label>
-                      <input
-                        value={customRingSize}
-                        onChange={(e) => setCustomRingSize(e.target.value)}
-                        placeholder="e.g. 12.5 or US 7"
-                      />
-                    </div>
-                    <div className="field" style={{ justifyContent: "flex-end" }}>
-                      <label>&nbsp;</label>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => {
-                          const size = customRingSize.trim();
-                          if (!size) return;
-                          setProductForm((current) => ({
-                            ...current,
-                            availableSizes: current.availableSizes.includes(size)
-                              ? current.availableSizes
-                              : [...current.availableSizes, size],
-                          }));
-                          setCustomRingSize("");
-                        }}
-                      >
-                        Add size variant
-                      </button>
-                    </div>
-                  </div>
-                  {productForm.availableSizes.length ? (
-                    <div className="hint" style={{ marginTop: 8 }}>
-                      Size variants: {productForm.availableSizes.join(", ")}
-                    </div>
-                  ) : (
-                    <div className="hint" style={{ marginTop: 8 }}>
-                      Choose at least one size before saving.
-                    </div>
-                  )}
-                </div>
-                ) : null}
+                <input type="hidden" name="discountsJson" value={serializeDiscountLines(productForm.discounts)} />
 
                 <div className="field">
                   <label>Product images (multiple — Shopify Files)</label>
@@ -2565,6 +2520,102 @@ export default function ProductsPage() {
                     <div className="hint">Gold weight. Entered separately from gross weight.</div>
                   </div>
                 </div>
+                <div className="field">
+                  <label>Is this a ring?</label>
+                  <div className="radio-inline">
+                    <label>
+                      <input
+                        type="radio"
+                        name="is-ring"
+                        checked={!productForm.isRing}
+                        onChange={() =>
+                          setProductForm((c) => ({ ...c, isRing: false, availableSizes: [] }))
+                        }
+                      />
+                      No
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="is-ring"
+                        checked={productForm.isRing}
+                        onChange={() => setProductForm((c) => ({ ...c, isRing: true }))}
+                      />
+                      Yes
+                    </label>
+                  </div>
+                </div>
+                {productForm.isRing ? (
+                <div className="field">
+                  <label>Ring size variants</label>
+                  <div className="hint" style={{ marginBottom: 8 }}>
+                    Sizes sit with colour × purity so the ring variants stay together.
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {RING_SIZE_OPTIONS.map((size) => {
+                      const selected = productForm.availableSizes.includes(size);
+                      return (
+                        <button
+                          key={size}
+                          type="button"
+                          className={`btn small${selected ? " primary" : ""}`}
+                          onClick={() =>
+                            setProductForm((current) => ({
+                              ...current,
+                              availableSizes: selected
+                                ? current.availableSizes.filter((item) => item !== size)
+                                : [...current.availableSizes, size].sort(
+                                    (a, b) => Number(a) - Number(b) || a.localeCompare(b),
+                                  ),
+                            }))
+                          }
+                        >
+                          {size}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="field-row" style={{ marginTop: 10 }}>
+                    <div className="field">
+                      <label>Add custom size</label>
+                      <input
+                        value={customRingSize}
+                        onChange={(e) => setCustomRingSize(e.target.value)}
+                        placeholder="e.g. 12.5 or US 7"
+                      />
+                    </div>
+                    <div className="field" style={{ justifyContent: "flex-end" }}>
+                      <label>&nbsp;</label>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          const size = customRingSize.trim();
+                          if (!size) return;
+                          setProductForm((current) => ({
+                            ...current,
+                            availableSizes: current.availableSizes.includes(size)
+                              ? current.availableSizes
+                              : [...current.availableSizes, size],
+                          }));
+                          setCustomRingSize("");
+                        }}
+                      >
+                        Add size variant
+                      </button>
+                    </div>
+                  </div>
+                  {productForm.availableSizes.length ? (
+                    <div className="hint" style={{ marginTop: 8 }}>
+                      Size variants: {productForm.availableSizes.join(", ")}
+                    </div>
+                  ) : (
+                    <div className="hint" style={{ marginTop: 8 }}>
+                      Choose at least one size before saving.
+                    </div>
+                  )}
+                </div>
+                ) : null}
 
                 <div className="field">
                   <label>Variant image (one image only)</label>
@@ -2732,19 +2783,36 @@ export default function ProductsPage() {
                             </>
                           ) : (
                             <div className="field">
-                              <label>Gemstone price (flat)</label>
-                              <input
-                                type="number"
-                                step="any"
-                                min="0"
+                              <label>Gemstone price</label>
+                              <AmountField
                                 value={Number.isFinite(stone.rate) ? stone.rate : ""}
-                                onChange={(e) =>
-                                  updateStoneLine(stone.key, { rate: Number(e.target.value), rateMode: "flat" })
+                                onValueChange={(next) =>
+                                  updateStoneLine(stone.key, { rate: next })
                                 }
+                                mode={stone.rateMode === "per_gram" ? "per_gram" : "flat"}
+                                onModeChange={(mode) =>
+                                  updateStoneLine(stone.key, {
+                                    rateMode: mode === "per_gram" ? "per_gram" : "flat",
+                                  })
+                                }
+                                modes={["flat", "per_gram"]}
                               />
-                              <div className="hint">
-                                Flat charge for this gemstone. Weight is not used.
-                              </div>
+                              {stone.rateMode === "per_gram" ? (
+                                <div className="field" style={{ marginTop: 8, marginBottom: 0 }}>
+                                  <label>Stone weight (g)</label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    min="0"
+                                    value={Number.isFinite(stone.weight) ? stone.weight : ""}
+                                    onChange={(e) =>
+                                      updateStoneLine(stone.key, { weight: Number(e.target.value) })
+                                    }
+                                  />
+                                </div>
+                              ) : (
+                                <div className="hint">₹ is a flat gemstone charge. /g uses weight × rate.</div>
+                              )}
                             </div>
                           )}
                           {(variantForm.stones || []).length > 1 ? (
@@ -2813,21 +2881,14 @@ export default function ProductsPage() {
                 {productForm.pricingMode === "auto" ? (
                   <div className="field">
                     <label>Wastage</label>
-                    <ChargeBasisRadios
-                      name="wastage-basis"
-                      value={variantForm.wastageType}
-                      onChange={(type) => setVariantForm((c) => ({ ...c, wastageType: type }))}
-                    />
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
+                    <AmountField
                       value={variantForm.wastagePercent}
-                      onChange={(e) =>
-                        setVariantForm((c) => ({
-                          ...c,
-                          wastagePercent: Number(e.target.value),
-                        }))
+                      onValueChange={(next) =>
+                        setVariantForm((c) => ({ ...c, wastagePercent: next }))
+                      }
+                      mode={amountModeFromCharge(variantForm.wastageType)}
+                      onModeChange={(mode) =>
+                        setVariantForm((c) => ({ ...c, wastageType: mode }))
                       }
                     />
                     <div className="hint">
@@ -2861,21 +2922,14 @@ export default function ProductsPage() {
                 <div className="field-row">
                   <div className="field">
                     <label>Making charge</label>
-                    <ChargeBasisRadios
-                      name="making-basis"
-                      value={variantForm.makingChargeType}
-                      onChange={(type) => setVariantForm((c) => ({ ...c, makingChargeType: type }))}
-                    />
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
+                    <AmountField
                       value={variantForm.makingChargeValue}
-                      onChange={(e) =>
-                        setVariantForm((c) => ({
-                          ...c,
-                          makingChargeValue: Number(e.target.value),
-                        }))
+                      onValueChange={(next) =>
+                        setVariantForm((c) => ({ ...c, makingChargeValue: next }))
+                      }
+                      mode={amountModeFromCharge(variantForm.makingChargeType)}
+                      onModeChange={(mode) =>
+                        setVariantForm((c) => ({ ...c, makingChargeType: mode }))
                       }
                     />
                     <div className="hint">
@@ -2922,6 +2976,91 @@ export default function ProductsPage() {
                     <div className="hint">
                       GST applies on gold + wastage + stones + making + other charges. Default 3%.
                     </div>
+                  </div>
+                ) : null}
+
+                {productForm.pricingMode === "auto" ? (
+                  <div className="field">
+                    <label>Product discounts</label>
+                    <div className="hint" style={{ marginBottom: 8 }}>
+                      Stack multiple discounts on making, wastage, or diamond. Catalog discounts from Pricing → Discounts also apply.
+                    </div>
+                    {(productForm.discounts.length ? productForm.discounts : []).map((line) => (
+                      <div key={line.key} className="field-row" style={{ alignItems: "end" }}>
+                        <div className="field">
+                          <label>On</label>
+                          <select
+                            value={line.target}
+                            onChange={(e) =>
+                              setProductForm((current) => ({
+                                ...current,
+                                discounts: current.discounts.map((item) =>
+                                  item.key === line.key
+                                    ? { ...item, target: e.target.value as DiscountTarget }
+                                    : item,
+                                ),
+                              }))
+                            }
+                          >
+                            <option value="making">Making</option>
+                            <option value="wastage">Wastage</option>
+                            <option value="diamond">Diamond</option>
+                          </select>
+                        </div>
+                        <div className="field">
+                          <label>Value</label>
+                          <AmountField
+                            value={line.value}
+                            onValueChange={(next) =>
+                              setProductForm((current) => ({
+                                ...current,
+                                discounts: current.discounts.map((item) =>
+                                  item.key === line.key ? { ...item, value: next } : item,
+                                ),
+                              }))
+                            }
+                            mode={line.type}
+                            onModeChange={(mode) =>
+                              setProductForm((current) => ({
+                                ...current,
+                                discounts: current.discounts.map((item) =>
+                                  item.key === line.key
+                                    ? { ...item, type: mode === "flat" ? "flat" : "percent" }
+                                    : item,
+                                ),
+                              }))
+                            }
+                            modes={["percent", "flat"]}
+                          />
+                        </div>
+                        <div className="field">
+                          <button
+                            type="button"
+                            className="btn small"
+                            onClick={() =>
+                              setProductForm((current) => ({
+                                ...current,
+                                discounts: current.discounts.filter((item) => item.key !== line.key),
+                              }))
+                            }
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() =>
+                        setProductForm((current) => ({
+                          ...current,
+                          discounts: [...current.discounts, emptyDiscountLine()],
+                        }))
+                      }
+                    >
+                      Add discount
+                    </button>
                   </div>
                 ) : null}
 
@@ -2988,7 +3127,17 @@ export default function ProductsPage() {
                     {variantsForSave.map((variant) => {
                       const purity = purities.find((p) => p.id === variant.purityId);
                       const price = calculateProductPrice(
-                        variantPriceInput(variant, goldPricePerGram, productForm.pricingMode),
+                        variantPriceInput(
+                          variant,
+                          goldPricePerGram,
+                          productForm.pricingMode,
+                          mergedDiscountLines(
+                            productForm.discounts,
+                            discountRules,
+                            editingId,
+                            selectedCollections.map((item) => item.id),
+                          ),
+                        ),
                       ).total;
                       const thumb = variant.imagePreview || variant.existingImageUrl;
                       const inList = variants.some((v) => v.key === variant.key);
@@ -3125,6 +3274,28 @@ export default function ProductsPage() {
                 <span className="l">Making charge</span>
                 <span className="v">{formatINR(preview.makingCharge)}</span>
               </div>
+              {preview.discountMaking > 0 || preview.discountWastage > 0 || preview.discountDiamond > 0 ? (
+                <>
+                  {preview.discountMaking > 0 ? (
+                    <div className="summary-row">
+                      <span className="l">Making discount</span>
+                      <span className="v">−{formatINR(preview.discountMaking)}</span>
+                    </div>
+                  ) : null}
+                  {preview.discountWastage > 0 ? (
+                    <div className="summary-row">
+                      <span className="l">Wastage discount</span>
+                      <span className="v">−{formatINR(preview.discountWastage)}</span>
+                    </div>
+                  ) : null}
+                  {preview.discountDiamond > 0 ? (
+                    <div className="summary-row">
+                      <span className="l">Diamond discount</span>
+                      <span className="v">−{formatINR(preview.discountDiamond)}</span>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
               {variantForm.stoneIncluded
                 ? quotedStones.map(({ stone, quote }) => (
                     <div className="summary-row" key={stone.key}>

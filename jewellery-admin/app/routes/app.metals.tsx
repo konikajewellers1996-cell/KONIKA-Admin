@@ -8,6 +8,7 @@ import {
   DEFAULT_DIAMOND_COLORS,
   centsToCarat,
   formatCentsRange,
+  nextSuffixedDiamondColor,
   qualityLabel,
   rangesOverlap,
 } from "../lib/diamond-pricing";
@@ -167,13 +168,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (!color || !clarity) {
         return { ok: false, message: "Color and clarity are required." };
       }
-      const name = qualityLabel(color, clarity);
-      const existing = await prisma.diamondQuality.findUnique({
-        where: { color_clarity: { color, clarity } },
-      });
-      if (existing) return { ok: false, message: `${name} already exists.` };
-      await prisma.diamondQuality.create({ data: { color, clarity, name } });
-      return { ok: true, message: `${name} added.` };
+      const related = await prisma.diamondQuality.findMany({ where: { clarity } });
+      const nextColor = nextSuffixedDiamondColor(
+        related.map((item) => item.color),
+        color,
+      );
+      const name = qualityLabel(nextColor, clarity);
+      await prisma.diamondQuality.create({ data: { color: nextColor, clarity, name } });
+      const suffixNote =
+        nextColor === color
+          ? `${name} added.`
+          : `${color} ${clarity} already exists — saved as ${name}.`;
+      return { ok: true, message: suffixNote };
     }
 
     if (intent === "delete-diamond-quality") {
@@ -800,7 +806,7 @@ export default function MetalsPage() {
             <div className="panel">
               <div className="panel-title">Add diamond quality</div>
               <div className="hint" style={{ marginBottom: 12 }}>
-                Quality is Color + Clarity, for example EF VVS1. Create a quality first, then add size slabs under it.
+                Quality is Color + Clarity. Adding the same pair again saves as a numbered colour (EF-2, EF-3) so different weight/price groups stay separate. Slabs under one quality still cover size ranges.
               </div>
               <Form method="post">
                 <input type="hidden" name="intent" value="add-diamond-quality" />

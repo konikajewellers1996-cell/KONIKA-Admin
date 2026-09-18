@@ -41,6 +41,7 @@ const titleMap: Record<string, string> = {
   "/app/collections": "Collections",
   "/app/metals": "Metals & purity",
   "/app/pricing": "Gold rates",
+  "/app/discounts": "Discounts",
 };
 
 function navActive(pathname: string, search: string, to: string, view?: string) {
@@ -146,6 +147,12 @@ export default function App() {
                 to="/app/pricing"
                 label="Gold rates"
                 active={navActive(location.pathname, location.search, "/app/pricing")}
+                onNavigate={closeNav}
+              />
+              <NavLink
+                to="/app/discounts"
+                label="Discounts"
+                active={navActive(location.pathname, location.search, "/app/discounts")}
                 onNavigate={closeNav}
               />
               <NavLink
