@@ -1132,6 +1132,10 @@ export async function syncAllProductPricesToShopify(graphql: GraphqlClient, gold
             ? (goldPricePerGram / 0.916) * variant.purity.purityValue
             : goldPricePerGram,
           stones: parseStonesJson(variant.stonesJson, variant),
+          otherCharges: variant.otherCharges,
+          gstPercent: variant.gstPercent,
+          pricingMode: product.pricingMode,
+          manualPrice: variant.manualPrice,
         }).total,
       }));
 
@@ -1155,6 +1159,7 @@ export async function syncAllProductPricesToShopify(graphql: GraphqlClient, gold
                 return [];
               }
             })(),
+            pricingMode: product.pricingMode,
           },
         );
       } catch (error: any) {
@@ -1312,6 +1317,10 @@ export async function syncSingleProductToShopify(
             ? (goldPricePerGram / 0.916) * variant.purity.purityValue
             : goldPricePerGram,
           stones: parseStonesJson(variant.stonesJson, variant),
+          otherCharges: variant.otherCharges,
+          gstPercent: variant.gstPercent,
+          pricingMode: product.pricingMode,
+          manualPrice: variant.manualPrice,
         }).total,
         status: variant.status,
       })),
@@ -1357,6 +1366,7 @@ export async function syncSingleProductToShopify(
             return [];
           }
         })(),
+        pricingMode: product.pricingMode,
       },
     );
   } catch (err) {

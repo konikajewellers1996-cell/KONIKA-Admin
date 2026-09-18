@@ -95,12 +95,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           stoneIncluded: first.stoneIncluded,
           stoneType: first.stoneType,
           wastagePercent: first.wastagePercent,
-          makingChargeType: first.makingChargeType as "percent" | "fixed",
+          makingChargeType: first.makingChargeType,
           makingChargeValue: first.makingChargeValue,
           stoneRate: first.stoneRate,
           goldPricePerGram: first.purity
             ? (goldPricePerGram / 0.916) * first.purity.purityValue
             : goldPricePerGram,
+          otherCharges: first.otherCharges,
+          gstPercent: first.gstPercent,
+          pricingMode: product.pricingMode,
+          manualPrice: first.manualPrice,
         }).total
       : 0;
 

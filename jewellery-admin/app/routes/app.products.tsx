@@ -14,7 +14,10 @@ import {
   calculateProductPrice,
   formatGrams,
   formatINR,
+  normalizeMakingChargeType,
+  normalizePricingMode,
   type MakingChargeType,
+  type PricingMode,
 } from "../lib/pricing";
 import {
   DEFAULT_DIAMOND_CUTS,
@@ -42,6 +45,7 @@ import {
   isDiamondStone,
   parseStonesJson,
   serializeStones,
+  stoneChargeForLine,
   stonesToLegacy,
   stoneWeightInGrams,
   type StoneLine,
@@ -64,6 +68,9 @@ type VariantDraft = {
   wastagePercent: number;
   makingChargeType: MakingChargeType;
   makingChargeValue: number;
+  otherCharges: number;
+  gstPercent: number;
+  manualPrice: number;
   stoneRate: number;
   stones: StoneLine[];
   status: "Active" | "Draft";
@@ -89,6 +96,7 @@ type ProductFormState = {
   availableSizes: string[];
   collectionIds: string[];
   status: string;
+  pricingMode: PricingMode;
 };
 
 const RING_SIZE_OPTIONS = Array.from({ length: 26 }, (_, i) => String(i + 5));
@@ -106,6 +114,42 @@ function parseAvailableSizes(value: string | null | undefined): string[] {
 function looksLikeRing(name: string, collections: Array<{ name: string }>) {
   if (/ring/i.test(name)) return true;
   return collections.some((item) => /ring/i.test(item.name));
+}
+
+function variantPriceInput(
+  variant: {
+    grossWeight: number;
+    stoneWeight: number;
+    stoneIncluded: boolean;
+    stoneType: string;
+    wastagePercent: number;
+    makingChargeType: string;
+    makingChargeValue: number;
+    stoneRate: number;
+    otherCharges?: number;
+    gstPercent?: number;
+    manualPrice?: number;
+    stones?: StoneLine[];
+  },
+  goldPricePerGram: number,
+  pricingMode: PricingMode | string = "auto",
+) {
+  return {
+    grossWeight: variant.grossWeight,
+    stoneWeight: variant.stoneWeight,
+    stoneIncluded: variant.stoneIncluded,
+    stoneType: variant.stoneType,
+    wastagePercent: variant.wastagePercent,
+    makingChargeType: variant.makingChargeType,
+    makingChargeValue: variant.makingChargeValue,
+    stoneRate: variant.stoneRate,
+    goldPricePerGram,
+    stones: variant.stones,
+    otherCharges: variant.otherCharges,
+    gstPercent: variant.gstPercent,
+    pricingMode,
+    manualPrice: variant.manualPrice,
+  };
 }
 
 function parseProductImages(
@@ -181,6 +225,9 @@ const emptyVariant = (metalId = "", purityId = "", metalColor = ""): VariantDraf
   wastagePercent: 5,
   makingChargeType: "percent",
   makingChargeValue: 10,
+  otherCharges: 0,
+  gstPercent: 3,
+  manualPrice: 0,
   stoneRate: 0,
   stones: [],
   status: "Active",
@@ -199,6 +246,7 @@ const emptyProductForm = (collectionIds: string[] = []): ProductFormState => ({
   availableSizes: [],
   collectionIds,
   status: "Active",
+  pricingMode: "auto",
 });
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -278,19 +326,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const catalog = uniqueProducts.map((product) => {
     const prices = product.variants.map((variant) =>
-      calculateProductPrice({
-        grossWeight: variant.grossWeight,
-        stoneWeight: variant.stoneWeight,
-        stoneIncluded: variant.stoneIncluded,
-        stoneType: variant.stoneType,
-        wastagePercent: variant.wastagePercent,
-        makingChargeType: variant.makingChargeType as MakingChargeType,
-        makingChargeValue: variant.makingChargeValue,
-        stoneRate: variant.stoneRate,
-        goldPricePerGram: variant.purity
-          ? (goldPricePerGram / 0.916) * variant.purity.purityValue
-          : goldPricePerGram,
-      }).total,
+      calculateProductPrice(
+        variantPriceInput(
+          {
+            ...variant,
+            makingChargeType: variant.makingChargeType,
+            stones: parseStonesJson(variant.stonesJson, variant),
+          },
+          variant.purity
+            ? (goldPricePerGram / 0.916) * variant.purity.purityValue
+            : goldPricePerGram,
+          product.pricingMode,
+        ),
+      ).total,
     );
 
     return {
@@ -312,6 +360,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       collectionIds: product.collections.map((c) => c.id),
       collection: product.collections.map((c) => c.name).join(", ") || "—",
       status: product.status,
+      pricingMode: normalizePricingMode(product.pricingMode),
       synced: Boolean(product.shopifyProductId),
       variantCount: product.variants.length,
       fromPrice: prices.length ? Math.min(...prices) : 0,
@@ -338,6 +387,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         wastagePercent: variant.wastagePercent,
         makingChargeType: variant.makingChargeType as MakingChargeType,
         makingChargeValue: variant.makingChargeValue,
+        otherCharges: variant.otherCharges,
+        gstPercent: variant.gstPercent,
+        manualPrice: variant.manualPrice,
         stoneRate: variant.stoneRate,
         status: variant.status as "Active" | "Draft",
         imageUrl: variant.imageUrl,
@@ -345,20 +397,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         purityLabel: variant.purity?.label || "",
         label: `${variant.metalColor} · ${variant.purity?.label || "22K"}`,
         stones: parseStonesJson(variant.stonesJson, variant),
-        price: calculateProductPrice({
-          grossWeight: variant.grossWeight,
-          stoneWeight: variant.stoneWeight,
-          stoneIncluded: variant.stoneIncluded,
-          stoneType: variant.stoneType,
-          wastagePercent: variant.wastagePercent,
-          makingChargeType: variant.makingChargeType as MakingChargeType,
-          makingChargeValue: variant.makingChargeValue,
-          stoneRate: variant.stoneRate,
-          goldPricePerGram: variant.purity
-            ? (goldPricePerGram / 0.916) * variant.purity.purityValue
-            : goldPricePerGram,
-          stones: parseStonesJson(variant.stonesJson, variant),
-        }).total,
+        price: calculateProductPrice(
+          variantPriceInput(
+            {
+              ...variant,
+              stones: parseStonesJson(variant.stonesJson, variant),
+            },
+            variant.purity
+              ? (goldPricePerGram / 0.916) * variant.purity.purityValue
+              : goldPricePerGram,
+            product.pricingMode,
+          ),
+        ).total,
       })),
     };
   });
@@ -564,8 +614,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             diamondCount,
             pricePerCarat,
             wastagePercent: Number(row.wastagePercent) || 0,
-            makingChargeType: row.makingChargeType === "fixed" ? "fixed" : "percent",
+            makingChargeType: row.makingChargeType === "per_gram" ? "per_gram" : row.makingChargeType === "fixed" || row.makingChargeType === "flat" ? "flat" : "percent",
             makingChargeValue: Number(row.makingChargeValue) || 0,
+            otherCharges: 0,
+            gstPercent: 3,
+            manualPrice: 0,
             stoneRate,
             status: row.variantStatus === "Draft" ? "Draft" : "Active",
           });
@@ -647,6 +700,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const availableSizesJson = JSON.stringify(availableSizes);
     const collectionIds = form.getAll("collectionIds").map(String);
     const status = String(form.get("status") || "Active");
+    const pricingMode = normalizePricingMode(String(form.get("pricingMode") || "auto"));
     const variantsRaw = String(form.get("variantsJson") || "[]");
 
     if (!sku || !name) {
@@ -689,6 +743,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             wastagePercent: 5,
             makingChargeType: "percent",
             makingChargeValue: 10,
+            otherCharges: 0,
+            gstPercent: 3,
+            manualPrice: 0,
             stoneRate: 0,
             stones: [],
             status: "Active",
@@ -818,8 +875,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       diamondCount: draft.stoneIncluded ? Number(draft.diamondCount) || 1 : 1,
       pricePerCarat: draft.stoneIncluded ? Number(draft.pricePerCarat) || 0 : 0,
       wastagePercent: Number(draft.wastagePercent) || 0,
-      makingChargeType: draft.makingChargeType,
+      makingChargeType: normalizeMakingChargeType(draft.makingChargeType),
       makingChargeValue: Number(draft.makingChargeValue) || 0,
+      otherCharges: Number(draft.otherCharges) || 0,
+      gstPercent: Number.isFinite(Number(draft.gstPercent)) ? Number(draft.gstPercent) : 3,
+      manualPrice: Number(draft.manualPrice) || 0,
       stoneRate: Number(draft.stoneRate) || 0,
       stonesJson: draft.stoneIncluded ? serializeStones(draft.stones || []) : "[]",
       imageUrl: variantAssets[index]?.imageUrl || "",
@@ -861,6 +921,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               wastagePercent: vData.wastagePercent,
               makingChargeType: vData.makingChargeType,
               makingChargeValue: vData.makingChargeValue,
+              otherCharges: vData.otherCharges,
+              gstPercent: vData.gstPercent,
+              manualPrice: vData.manualPrice,
               stoneRate: vData.stoneRate,
               stonesJson: vData.stonesJson,
               status: vData.status,
@@ -900,6 +963,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           dimensionWidth,
           dimensionHeight,
           availableSizes: availableSizesJson,
+          pricingMode,
           status,
           collections: {
             set: mergedCollectionIds.map((id) => ({ id })),
@@ -919,6 +983,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           dimensionWidth,
           dimensionHeight,
           availableSizes: availableSizesJson,
+          pricingMode,
           status,
           variants: { create: variantCreateData },
           collections: {
@@ -1133,7 +1198,7 @@ export default function ProductsPage() {
     if (isDiamondStone(item.stone.stoneType)) {
       return sum + (item.quote.ok && "diamondValue" in item.quote ? item.quote.diamondValue : 0);
     }
-    return sum + (Number(item.stone.weight) || 0) * (Number(item.stone.rate) || 0);
+    return sum + stoneChargeForLine(item.stone);
   }, 0);
 
   const quotedPricePerCarat = (() => {
@@ -1204,15 +1269,20 @@ export default function ProductsPage() {
         makingChargeValue: variantForm.makingChargeValue,
         stoneRate: quotedStoneRate,
         goldPricePerGram: adjustedGoldPrice,
+        otherCharges: variantForm.otherCharges,
+        gstPercent: variantForm.gstPercent,
+        pricingMode: productForm.pricingMode,
+        manualPrice: variantForm.manualPrice,
         stones: quotedStones.map((item) => ({
           stoneType: item.stone.stoneType,
           weight: item.stone.weight,
           rate: isDiamondStone(item.stone.stoneType) && item.quote.ok && "diamondValue" in item.quote
             ? item.quote.diamondValue
             : item.stone.rate,
+          rateMode: item.stone.rateMode,
         })),
       }),
-    [variantForm, adjustedGoldPrice, quotedStoneRate, quotedStones],
+    [variantForm, adjustedGoldPrice, quotedStoneRate, quotedStones, productForm.pricingMode],
   );
 
   const variantsForSave = useMemo(() => {
@@ -1359,6 +1429,7 @@ export default function ProductsPage() {
       availableSizes: product.availableSizes || [],
       collectionIds: product.collectionIds,
       status: product.status,
+      pricingMode: normalizePricingMode(product.pricingMode),
     });
     const selectedColls = product.collectionIds
       .map((id) => {
@@ -1409,8 +1480,11 @@ export default function ProductsPage() {
       diamondCount: Number(variant.diamondCount) || 1,
       pricePerCarat: Number(variant.pricePerCarat) || 0,
       wastagePercent: Number(variant.wastagePercent) || 0,
-      makingChargeType: variant.makingChargeType,
+      makingChargeType: normalizeMakingChargeType(variant.makingChargeType),
       makingChargeValue: Number(variant.makingChargeValue) || 0,
+      otherCharges: Number(variant.otherCharges) || 0,
+      gstPercent: Number.isFinite(Number(variant.gstPercent)) ? Number(variant.gstPercent) : 3,
+      manualPrice: Number(variant.manualPrice) || 0,
       stoneRate: Number(variant.stoneRate) || 0,
       stones: Array.isArray(variant.stones)
         ? variant.stones
@@ -1503,6 +1577,7 @@ export default function ProductsPage() {
   const saveVariantToList = () => {
     if (!variantForm.metalId || !variantForm.purityId) return;
     if (!(Number(variantForm.grossWeight) > 0)) return;
+    if (productForm.pricingMode === "manual" && !(Number(variantForm.manualPrice) > 0)) return;
     if (variantForm.stoneIncluded && !diamondQuote.ok) return;
 
     const variantFormQuoted = flattenQuotedVariant(variantForm);
@@ -1580,6 +1655,7 @@ export default function ProductsPage() {
     if (!enableVariants) {
       // Direct product: persist only the current metal/pricing form as a single entry
       if (!(Number(variantForm.grossWeight) > 0)) return;
+      if (productForm.pricingMode === "manual" && !(Number(variantForm.manualPrice) > 0)) return;
       if (variantForm.stoneIncluded && !diamondQuote.ok) return;
       const directKey = editingVariantKey || variants[0]?.key || emptyVariant().key;
       list = [
@@ -1595,6 +1671,7 @@ export default function ProductsPage() {
       if (draftFile) nextVariantFiles[directKey] = draftFile;
     } else if (editingVariantKey) {
       if (!(Number(variantForm.grossWeight) > 0)) return;
+      if (productForm.pricingMode === "manual" && !(Number(variantForm.manualPrice) > 0)) return;
       if (variantForm.stoneIncluded && !diamondQuote.ok) return;
       if (draftFile) nextVariantFiles[editingVariantKey] = draftFile;
       list = list.map((v) =>
@@ -1759,6 +1836,31 @@ export default function ProductsPage() {
                     placeholder="e.g. 22K Gold Solitaire Ring"
                     required
                   />
+                </div>
+                <div className="field">
+                  <label>Pricing mode</label>
+                  <input type="hidden" name="pricingMode" value={productForm.pricingMode} />
+                  <div className="mode-switch" role="group" aria-label="Pricing mode">
+                    <button
+                      type="button"
+                      className={productForm.pricingMode === "auto" ? "is-active" : ""}
+                      onClick={() => setProductForm((c) => ({ ...c, pricingMode: "auto" }))}
+                    >
+                      Auto
+                    </button>
+                    <button
+                      type="button"
+                      className={productForm.pricingMode === "manual" ? "is-active" : ""}
+                      onClick={() => setProductForm((c) => ({ ...c, pricingMode: "manual" }))}
+                    >
+                      Manual
+                    </button>
+                  </div>
+                  <div className="hint">
+                    {productForm.pricingMode === "manual"
+                      ? "Enter the sell price directly. Formula charges are skipped."
+                      : "Price is calculated from gold, stones, making, other charges, and GST."}
+                  </div>
                 </div>
                 <div className="field-row">
                   <div className="field">
@@ -2339,7 +2441,27 @@ export default function ProductsPage() {
                             </>
                           ) : (
                             <div className="field">
-                              <label>Stone rate (₹ / g)</label>
+                              <label>Gemstone price</label>
+                              <div className="radio-inline">
+                                <label>
+                                  <input
+                                    type="radio"
+                                    name={`gem-rate-${stone.key}`}
+                                    checked={(stone.rateMode || "per_gram") !== "flat"}
+                                    onChange={() => updateStoneLine(stone.key, { rateMode: "per_gram" })}
+                                  />
+                                  Per gram
+                                </label>
+                                <label>
+                                  <input
+                                    type="radio"
+                                    name={`gem-rate-${stone.key}`}
+                                    checked={stone.rateMode === "flat"}
+                                    onChange={() => updateStoneLine(stone.key, { rateMode: "flat" })}
+                                  />
+                                  Flat
+                                </label>
+                              </div>
                               <input
                                 type="number"
                                 step="0.01"
@@ -2349,6 +2471,11 @@ export default function ProductsPage() {
                                   updateStoneLine(stone.key, { rate: Number(e.target.value) })
                                 }
                               />
+                              <div className="hint">
+                                {stone.rateMode === "flat"
+                                  ? "This amount is added as the full gemstone charge."
+                                  : "Charge = weight (g) × this rate."}
+                              </div>
                             </div>
                           )}
                           {(variantForm.stones || []).length > 1 ? (
@@ -2388,27 +2515,62 @@ export default function ProductsPage() {
                   </div>
                 ) : null}
 
-                <div className="field-row">
+                {productForm.pricingMode === "manual" ? (
                   <div className="field">
-                    <label>Making charge type</label>
-                    <select
-                      value={variantForm.makingChargeType}
+                    <label>Direct sell price (₹)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={Number.isFinite(variantForm.manualPrice) ? variantForm.manualPrice : ""}
                       onChange={(e) =>
                         setVariantForm((c) => ({
                           ...c,
-                          makingChargeType: e.target.value as MakingChargeType,
+                          manualPrice: Number(e.target.value),
                         }))
                       }
-                    >
-                      <option value="percent">Percentage (%)</option>
-                      <option value="fixed">Plain rate (₹)</option>
-                    </select>
+                    />
+                    <div className="hint">This amount is saved as the Shopify sell price. No gold or GST formula is applied.</div>
                   </div>
+                ) : (
+                <div className="field-row">
                   <div className="field">
-                    <label>
-                      Making charge{" "}
-                      {variantForm.makingChargeType === "percent" ? "(%)" : "(₹)"}
-                    </label>
+                    <label>Making charge</label>
+                    <div className="radio-inline">
+                      <label>
+                        <input
+                          type="radio"
+                          name="making-basis"
+                          checked={normalizeMakingChargeType(variantForm.makingChargeType) === "flat"}
+                          onChange={() =>
+                            setVariantForm((c) => ({ ...c, makingChargeType: "flat" }))
+                          }
+                        />
+                        Flat
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name="making-basis"
+                          checked={normalizeMakingChargeType(variantForm.makingChargeType) === "per_gram"}
+                          onChange={() =>
+                            setVariantForm((c) => ({ ...c, makingChargeType: "per_gram" }))
+                          }
+                        />
+                        Per gram
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name="making-basis"
+                          checked={normalizeMakingChargeType(variantForm.makingChargeType) === "percent"}
+                          onChange={() =>
+                            setVariantForm((c) => ({ ...c, makingChargeType: "percent" }))
+                          }
+                        />
+                        Percentage
+                      </label>
+                    </div>
                     <input
                       type="number"
                       step="0.01"
@@ -2421,8 +2583,52 @@ export default function ProductsPage() {
                         }))
                       }
                     />
+                    <div className="hint">
+                      {normalizeMakingChargeType(variantForm.makingChargeType) === "per_gram"
+                        ? "₹ per gram of net gold"
+                        : normalizeMakingChargeType(variantForm.makingChargeType) === "percent"
+                          ? "Percent of gold value (including wastage)"
+                          : "Flat making amount"}
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label>Other charges (₹)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={Number.isFinite(variantForm.otherCharges) ? variantForm.otherCharges : ""}
+                      onChange={(e) =>
+                        setVariantForm((c) => ({
+                          ...c,
+                          otherCharges: Number(e.target.value),
+                        }))
+                      }
+                    />
                   </div>
                 </div>
+                )}
+
+                {productForm.pricingMode === "auto" ? (
+                  <div className="field">
+                    <label>GST %</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={Number.isFinite(variantForm.gstPercent) ? variantForm.gstPercent : 3}
+                      onChange={(e) =>
+                        setVariantForm((c) => ({
+                          ...c,
+                          gstPercent: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="hint">
+                      GST applies on gold + wastage + stones + making + other charges. Default 3%.
+                    </div>
+                  </div>
+                ) : null}
 
                 <label className="check-row">
                   <input
@@ -2462,7 +2668,11 @@ export default function ProductsPage() {
                       type="button"
                       className="btn primary"
                       onClick={saveVariantToList}
-                      disabled={variantForm.stoneIncluded && !diamondQuote.ok}
+                      disabled={
+                        (variantForm.stoneIncluded && !diamondQuote.ok) ||
+                        (productForm.pricingMode === "manual" &&
+                          !(Number(variantForm.manualPrice) > 0))
+                      }
                     >
                       {editingVariantKey ? "Update variant" : "Add this variant to list"}
                     </button>
@@ -2482,18 +2692,9 @@ export default function ProductsPage() {
                   <div className="variant-list">
                     {variantsForSave.map((variant) => {
                       const purity = purities.find((p) => p.id === variant.purityId);
-                      const price = calculateProductPrice({
-                        grossWeight: variant.grossWeight,
-                        stoneWeight: variant.stoneWeight,
-                        stoneIncluded: variant.stoneIncluded,
-                        stoneType: variant.stoneType,
-                        wastagePercent: variant.wastagePercent,
-                        makingChargeType: variant.makingChargeType,
-                        makingChargeValue: variant.makingChargeValue,
-                        stoneRate: variant.stoneRate,
-                        goldPricePerGram,
-                        stones: variant.stones,
-                      }).total;
+                      const price = calculateProductPrice(
+                        variantPriceInput(variant, goldPricePerGram, productForm.pricingMode),
+                      ).total;
                       const thumb = variant.imagePreview || variant.existingImageUrl;
                       const inList = variants.some((v) => v.key === variant.key);
                       const isEditingRow = editingVariantKey === variant.key;
@@ -2603,6 +2804,13 @@ export default function ProductsPage() {
                   className="upload-preview"
                 />
               ) : null}
+              {productForm.pricingMode === "manual" ? (
+                <div className="summary-row">
+                  <span className="l">Direct sell price</span>
+                  <span className="v">{formatINR(preview.total)}</span>
+                </div>
+              ) : (
+                <>
               <div className="summary-row">
                 <span className="l">Gold rate used</span>
                 <span className="v">{formatINR(adjustedGoldPrice)} / g</span>
@@ -2617,7 +2825,11 @@ export default function ProductsPage() {
               </div>
               <div className="summary-row">
                 <span className="l">Gold value</span>
-                <span className="v">{formatINR(preview.goldValue)}</span>
+                <span className="v">{formatINR(preview.netGoldValue)}</span>
+              </div>
+              <div className="summary-row">
+                <span className="l">Wastage</span>
+                <span className="v">{formatINR(preview.wastageValue)}</span>
               </div>
               <div className="summary-row">
                 <span className="l">Making charge</span>
@@ -2634,7 +2846,7 @@ export default function ProductsPage() {
                         {isDiamondStone(stone.stoneType) && quote.ok && "diamondValue" in quote
                           ? ` · ${formatINR(quote.diamondValue)}`
                           : !isDiamondStone(stone.stoneType)
-                            ? ` · ${formatINR((stone.weight || 0) * (stone.rate || 0))}`
+                            ? ` · ${formatINR(stoneChargeForLine(stone))}`
                             : ""}
                       </span>
                     </div>
@@ -2644,8 +2856,26 @@ export default function ProductsPage() {
                 <span className="l">Stone charges</span>
                 <span className="v">{formatINR(preview.stoneCharge)}</span>
               </div>
+              {productForm.pricingMode === "auto" ? (
+                <>
+                  <div className="summary-row">
+                    <span className="l">Other charges</span>
+                    <span className="v">{formatINR(preview.otherCharges)}</span>
+                  </div>
+                  <div className="summary-row">
+                    <span className="l">Subtotal</span>
+                    <span className="v">{formatINR(preview.subtotal)}</span>
+                  </div>
+                  <div className="summary-row">
+                    <span className="l">GST ({preview.gstPercent}%)</span>
+                    <span className="v">{formatINR(preview.gstValue)}</span>
+                  </div>
+                </>
+              ) : null}
+                </>
+              )}
               <div className="summary-total">
-                <span className="l">Sell price</span>
+                <span className="l">Total payable</span>
                 <span className="v">{formatINR(preview.total)}</span>
               </div>
               <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
@@ -2658,6 +2888,8 @@ export default function ProductsPage() {
                     (enableVariants
                       ? variantsForSave.length === 0
                       : !(Number(variantForm.grossWeight) > 0) ||
+                        (productForm.pricingMode === "manual" &&
+                          !(Number(variantForm.manualPrice) > 0)) ||
                         (variantForm.stoneIncluded && !diamondQuote.ok))
                   }
                 >
@@ -2958,9 +3190,11 @@ export default function ProductsPage() {
                                 <div className="hint">
                                   Gross {formatGrams(variant.grossWeight)} · Wastage{" "}
                                   {variant.wastagePercent}% · Making{" "}
-                                  {variant.makingChargeType === "percent"
+                                  {normalizeMakingChargeType(variant.makingChargeType) === "percent"
                                     ? `${variant.makingChargeValue}%`
-                                    : formatINR(variant.makingChargeValue)}
+                                    : normalizeMakingChargeType(variant.makingChargeType) === "per_gram"
+                                      ? `${formatINR(variant.makingChargeValue)}/g`
+                                      : formatINR(variant.makingChargeValue)}
                                 </div>
                               </div>
                             </div>

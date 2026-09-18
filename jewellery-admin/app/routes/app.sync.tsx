@@ -5,6 +5,7 @@ import {
   calculateProductPrice,
   type MakingChargeType,
 } from "../lib/pricing";
+import { parseStonesJson } from "../lib/stones";
 import {
   addProductToShopifyCollection,
   syncCollectionToShopify,
@@ -161,6 +162,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 goldPricePerGram: variant.purity
                   ? (goldPricePerGram / 0.916) * variant.purity.purityValue
                   : goldPricePerGram,
+                stones: parseStonesJson(variant.stonesJson, variant),
+                otherCharges: variant.otherCharges,
+                gstPercent: variant.gstPercent,
+                pricingMode: product.pricingMode,
+                manualPrice: variant.manualPrice,
               }).total,
               status: variant.status,
             })),
@@ -205,6 +211,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                   return [];
                 }
               })(),
+              pricingMode: product.pricingMode,
             },
           );
         } catch (metaErr) {

@@ -27,6 +27,10 @@ export type MetafieldVariantSource = {
   diamondQuality?: { color: string; clarity: string; name: string } | null;
   purity?: { label: string; purityValue: number } | null;
   stonesJson?: string | null;
+  otherCharges?: number;
+  gstPercent?: number;
+  manualPrice?: number;
+  pricingMode?: string;
 };
 
 function formatInrAmount(value: number): string {
@@ -83,6 +87,10 @@ export function buildVariantPriceBreakup(
     stoneRate: variant.stoneRate,
     goldPricePerGram: goldRate,
     stones,
+    otherCharges: variant.otherCharges,
+    gstPercent: variant.gstPercent,
+    pricingMode: variant.pricingMode,
+    manualPrice: variant.manualPrice,
   });
 
   const purityLabel = variant.purity?.label || "22K";
@@ -105,9 +113,10 @@ export function buildVariantPriceBreakup(
     making_discount: "",
     making_og_price: "",
     making_price: formatInrAmount(breakdown.makingCharge),
-    gst_text: "",
-    gst_price: "",
-    total_og_price: "",
+    gst_text: breakdown.gstValue > 0 ? `GST (${breakdown.gstPercent}%)` : "",
+    gst_price: breakdown.gstValue > 0 ? formatInrAmount(breakdown.gstValue) : "",
+    other_charges: breakdown.otherCharges > 0 ? formatInrAmount(breakdown.otherCharges) : "",
+    total_og_price: breakdown.subtotal > 0 ? formatInrAmount(breakdown.subtotal) : "",
     total_price: formatInrAmount(breakdown.total),
   };
 
@@ -293,6 +302,7 @@ export async function syncProductJewelleryMetafields(
     width?: string;
     height?: string;
     sizes?: string[];
+    pricingMode?: string;
   },
 ) {
   await ensureStorefrontMetafieldDefinitions(graphql);
@@ -302,7 +312,11 @@ export async function syncProductJewelleryMetafields(
   const sourceList = (active.length ? active : variants).map((v) => {
     const mappedId =
       v.id && variantIdMap?.[v.id] ? variantIdMap[v.id] : v.shopifyVariantId;
-    return { ...v, shopifyVariantId: mappedId || v.shopifyVariantId };
+    return {
+      ...v,
+      shopifyVariantId: mappedId || v.shopifyVariantId,
+      pricingMode: extras?.pricingMode || v.pricingMode || "auto",
+    };
   });
 
   if (!sourceList.length) return;

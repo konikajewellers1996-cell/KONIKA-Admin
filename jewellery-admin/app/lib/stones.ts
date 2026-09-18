@@ -1,9 +1,12 @@
+export type StoneRateMode = "flat" | "per_gram";
+
 export type StoneLine = {
   key: string;
   stoneType: string;
   gemstoneTypeId: string;
   weight: number;
   rate: number;
+  rateMode: StoneRateMode;
   diamondQualityId: string;
   diamondCount: number;
   diamondCategory: string;
@@ -17,6 +20,7 @@ export function emptyStoneLine(stoneType = "Diamond"): StoneLine {
     gemstoneTypeId: "",
     weight: 0,
     rate: 0,
+    rateMode: "per_gram",
     diamondQualityId: "",
     diamondCount: 1,
     diamondCategory: "Round",
@@ -33,10 +37,13 @@ export function stoneWeightInGrams(stone: Pick<StoneLine, "stoneType" | "weight"
   return isDiamondStone(stone.stoneType) ? weight * 0.2 : weight;
 }
 
-export function stoneChargeForLine(stone: Pick<StoneLine, "stoneType" | "weight" | "rate">) {
+export function stoneChargeForLine(
+  stone: Pick<StoneLine, "stoneType" | "weight" | "rate" | "rateMode">,
+) {
   const weight = Number(stone.weight) || 0;
   const rate = Number(stone.rate) || 0;
   if (isDiamondStone(stone.stoneType)) return rate;
+  if (stone.rateMode === "flat") return rate;
   return weight * rate;
 }
 
@@ -63,6 +70,7 @@ export function parseStonesJson(
           gemstoneTypeId: String(item.gemstoneTypeId || ""),
           weight: Number(item.weight) || 0,
           rate: Number(item.rate) || 0,
+          rateMode: String(item.rateMode || "per_gram").toLowerCase() === "flat" ? "flat" : "per_gram",
           diamondQualityId: String(item.diamondQualityId || ""),
           diamondCount: Number(item.diamondCount) || 1,
           diamondCategory: String(item.diamondCategory || "Round"),
@@ -82,6 +90,7 @@ export function parseStonesJson(
         gemstoneTypeId: "",
         weight: Number(fallback.stoneWeight) || 0,
         rate: Number(fallback.stoneRate) || 0,
+        rateMode: "per_gram",
         diamondQualityId: fallback.diamondQualityId || "",
         diamondCount: Number(fallback.diamondCount) || 1,
         diamondCategory: fallback.diamondCategory || "Round",
@@ -100,6 +109,7 @@ export function serializeStones(stones: StoneLine[]) {
       gemstoneTypeId: stone.gemstoneTypeId,
       weight: Number(stone.weight) || 0,
       rate: Number(stone.rate) || 0,
+      rateMode: stone.rateMode === "flat" ? "flat" : "per_gram",
       diamondQualityId: stone.diamondQualityId || "",
       diamondCount: Number(stone.diamondCount) || 1,
       diamondCategory: stone.diamondCategory || "",

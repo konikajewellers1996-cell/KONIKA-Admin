@@ -871,6 +871,48 @@ table.data tbody tr:hover {
   line-height: 1.35;
 }
 
+.mode-switch {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.mode-switch button {
+  border: none;
+  background: transparent;
+  padding: 8px 16px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-secondary-content, #4b5563);
+}
+
+.mode-switch button.is-active {
+  background: var(--surface-primary-cta, #182851);
+  color: #fff;
+}
+
+.radio-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin: 6px 0 8px;
+}
+
+.radio-inline label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.radio-inline input {
+  accent-color: var(--surface-primary-cta, #182851);
+}
+
 .prod-name {
   font-weight: 600;
   color: var(--text-primary-heading);

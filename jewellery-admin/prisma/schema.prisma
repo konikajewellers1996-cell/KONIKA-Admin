@@ -85,6 +85,7 @@ model Product {
   dimensionWidth   String           @default("")
   dimensionHeight  String           @default("")
   availableSizes   String           @default("[]")
+  pricingMode      String           @default("auto")
   shopifyProductId String?
   status           String           @default("Active")
   createdAt        DateTime         @default(now())
@@ -110,6 +111,9 @@ model ProductVariant {
   wastagePercent     Float        @default(0)
   makingChargeType   String       @default("percent")
   makingChargeValue  Float        @default(0)
+  otherCharges       Float        @default(0)
+  gstPercent         Float        @default(3)
+  manualPrice        Float        @default(0)
   stoneRate          Float        @default(0)
   stonesJson         String       @default("[]")
   imageUrl           String       @default("")
