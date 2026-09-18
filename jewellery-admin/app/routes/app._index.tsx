@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
-import type { LoaderFunctionArgs } from "react-router";
-import { Link, useLoaderData } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { Link, redirect, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { calculateProductPrice, formatGrams, formatINR } from "../lib/pricing";
@@ -28,6 +28,11 @@ export interface StoreOrderItem {
   paymentStatus: "Paid" | "Pending";
   fulfillmentStatus: "Fulfilled" | "Unfulfilled" | "In transit";
 }
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  await authenticate.admin(request);
+  return redirect("/app");
+};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);

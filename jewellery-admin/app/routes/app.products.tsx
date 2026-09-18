@@ -3,6 +3,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
   Form,
   useActionData,
+  useFetcher,
   useLoaderData,
   useNavigation,
   useSearchParams,
@@ -1273,6 +1274,7 @@ export default function ProductsPage() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const submit = useSubmit();
+  const draftFetcher = useFetcher();
   const [searchParams, setSearchParams] = useSearchParams();
   const busy = navigation.state !== "idle";
   const view = searchParams.get("view") === "catalog" ? "catalog" : "edit";
@@ -1306,7 +1308,7 @@ export default function ProductsPage() {
   const [customRingSize, setCustomRingSize] = useState("");
   const hydratedEditIdRef = useRef<string | null>(null);
   const sessionRestoredRef = useRef(false);
-  const persistDraftOnLeaveRef = useRef<() => void>(() => {});
+  const persistDraftOnLeaveRef = useRef<(saveRemote?: boolean) => void>(() => {});
 
   useEffect(() => {
     if (actionData && "clearEdit" in actionData && actionData.clearEdit && actionData.ok) {
@@ -1883,7 +1885,7 @@ export default function ProductsPage() {
     draftPreview,
   ]);
 
-  const persistDraftOnLeave = () => {
+  const persistDraftOnLeave = (saveRemote = false) => {
     if (!showForm) return;
     const payload = {
       editingId,
@@ -1898,6 +1900,7 @@ export default function ProductsPage() {
     };
     if (productFormSessionIsEmpty(payload)) return;
     saveProductFormSession(payload);
+    if (!saveRemote) return;
     const fd = new FormData();
     fd.set("intent", "autosave-draft");
     if (editingId) fd.set("productId", editingId);
@@ -1945,19 +1948,23 @@ export default function ProductsPage() {
       "variantsJson",
       JSON.stringify(list.map(({ imagePreview: _p, ...rest }) => rest)),
     );
-    submit(fd, { method: "post", encType: "multipart/form-data", navigate: false });
+    draftFetcher.submit(fd, {
+      method: "post",
+      action: "/app/products",
+      encType: "multipart/form-data",
+    });
   };
   persistDraftOnLeaveRef.current = persistDraftOnLeave;
 
   useEffect(() => {
     const onHidden = () => {
-      if (document.visibilityState === "hidden") persistDraftOnLeaveRef.current();
+      if (document.visibilityState === "hidden") persistDraftOnLeaveRef.current(true);
     };
-    const onPageHide = () => persistDraftOnLeaveRef.current();
+    const onPageHide = () => persistDraftOnLeaveRef.current(true);
     document.addEventListener("visibilitychange", onHidden);
     window.addEventListener("pagehide", onPageHide);
     return () => {
-      persistDraftOnLeaveRef.current();
+      persistDraftOnLeaveRef.current(false);
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("pagehide", onPageHide);
     };
@@ -2248,7 +2255,7 @@ export default function ProductsPage() {
               type="button"
               className="btn"
               onClick={() => {
-                persistDraftOnLeaveRef.current();
+                persistDraftOnLeaveRef.current(true);
                 setSearchParams({ view: "catalog" });
               }}
             >
