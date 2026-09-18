@@ -20,6 +20,7 @@ type SyncVariantInput = {
   shopifyVariantId?: string | null;
   status: string;
   imageUrl?: string;
+  size?: string;
 };
 
 type SyncProductInput = {
@@ -31,7 +32,35 @@ type SyncProductInput = {
   imageUrl?: string;
   imageUrls?: string[];
   variants: SyncVariantInput[];
+  sizes?: string[];
 };
+
+function optionIsSize(name: string) {
+  return /size/i.test(name.trim());
+}
+
+type WorkVariant = SyncVariantInput & { originId: string };
+
+function expandShopifyVariants(input: SyncProductInput): {
+  rows: WorkVariant[];
+  sizes: string[];
+} {
+  const sizes = [...new Set((input.sizes || []).map((item) => String(item).trim()).filter(Boolean))];
+  const base = input.variants.map((variant) => ({ ...variant, originId: variant.id }));
+  if (!sizes.length) return { rows: base, sizes: [] };
+  if (base.length * sizes.length > 100) return { rows: base, sizes: [] };
+  const rows: WorkVariant[] = [];
+  for (const variant of base) {
+    for (const size of sizes) {
+      rows.push({
+        ...variant,
+        size,
+        skuSuffix: `${variant.skuSuffix}-SZ${size}`.replace(/\s+/g, ""),
+      });
+    }
+  }
+  return { rows, sizes };
+}
 
 async function gql<T = Record<string, unknown>>(
   graphql: GraphqlClient,
@@ -100,22 +129,31 @@ async function ensureShopifyProductOptions(
   }>,
 ) {
   if (!desired.length) {
-    return { colorName: "Colour", purityName: "Purity" };
+    return { colorName: "Colour", purityName: "Purity", sizeName: "Size" };
   }
 
   const existingColor = remoteOptions.find((o) => optionIsColor(o.name));
   const existingPurity = remoteOptions.find((o) => optionIsPurity(o.name));
+  const existingSize = remoteOptions.find((o) => optionIsSize(o.name));
   const colorName = existingColor?.name || "Colour";
   const purityName = existingPurity?.name || "Purity";
+  const sizeName = existingSize?.name || "Size";
 
   const toCreate: Array<{ name: string; values: Array<{ name: string }> }> = [];
   for (const option of desired) {
     const isColor = optionIsColor(option.name);
     const isPurity = optionIsPurity(option.name);
-    const existing = isColor ? existingColor : isPurity ? existingPurity : remoteOptions.find((o) => o.name === option.name);
+    const isSize = optionIsSize(option.name);
+    const existing = isColor
+      ? existingColor
+      : isPurity
+        ? existingPurity
+        : isSize
+          ? existingSize
+          : remoteOptions.find((o) => o.name === option.name);
     if (!existing) {
       toCreate.push({
-        name: isColor ? colorName : isPurity ? purityName : option.name,
+        name: isColor ? colorName : isPurity ? purityName : isSize ? sizeName : option.name,
         values: option.values.map((name) => ({ name })),
       });
     }
@@ -172,8 +210,15 @@ async function ensureShopifyProductOptions(
   for (const option of desired) {
     const isColor = optionIsColor(option.name);
     const isPurity = optionIsPurity(option.name);
+    const isSize = optionIsSize(option.name);
     const remote = latest.find((o) =>
-      isColor ? optionIsColor(o.name) : isPurity ? optionIsPurity(o.name) : o.name === option.name,
+      isColor
+        ? optionIsColor(o.name)
+        : isPurity
+          ? optionIsPurity(o.name)
+          : isSize
+            ? optionIsSize(o.name)
+            : o.name === option.name,
     );
     if (!remote) continue;
     const existingNames = new Set(remote.optionValues.map((v) => v.name));
@@ -206,7 +251,8 @@ async function ensureShopifyProductOptions(
 
   const resolvedColor = latest.find((o) => optionIsColor(o.name))?.name || colorName;
   const resolvedPurity = latest.find((o) => optionIsPurity(o.name))?.name || purityName;
-  return { colorName: resolvedColor, purityName: resolvedPurity };
+  const resolvedSize = latest.find((o) => optionIsSize(o.name))?.name || sizeName;
+  return { colorName: resolvedColor, purityName: resolvedPurity, sizeName: resolvedSize };
 }
 
 export async function syncCollectionToShopify(
@@ -386,8 +432,9 @@ export async function syncProductToShopify(
   input: SyncProductInput,
   existingProductId?: string | null,
 ) {
-  const colors = [...new Set(input.variants.map((v) => v.color).filter(Boolean))];
-  const purities = [...new Set(input.variants.map((v) => v.purityLabel).filter(Boolean))];
+  const { rows: shopifyRows, sizes } = expandShopifyVariants(input);
+  const colors = [...new Set(shopifyRows.map((v) => v.color).filter(Boolean))];
+  const purities = [...new Set(shopifyRows.map((v) => v.purityLabel).filter(Boolean))];
 
   // Determine options structure
   const productOptions: Array<{ name: string; values: Array<{ name: string }> }> = [];
@@ -398,6 +445,9 @@ export async function syncProductToShopify(
     productOptions.push({ name: "Colour", values: colors.map((name) => ({ name })) });
   } else if (purities.length > 0) {
     productOptions.push({ name: "Purity", values: purities.map((name) => ({ name })) });
+  }
+  if (sizes.length) {
+    productOptions.push({ name: "Size", values: sizes.map((name) => ({ name })) });
   }
 
   // Check if existingProductId exists on Shopify
@@ -537,7 +587,7 @@ export async function syncProductToShopify(
     });
   }
 
-  for (const variant of input.variants) {
+  for (const variant of shopifyRows) {
     if (!variant.imageUrl) continue;
     if (
       mediaItems.some(
@@ -642,6 +692,7 @@ export async function syncProductToShopify(
 
     let colorOptionName = "Colour";
     let purityOptionName = "Purity";
+    let sizeOptionName = "Size";
     if (productOptions.length) {
       const resolved = await ensureShopifyProductOptions(
         graphql,
@@ -654,12 +705,13 @@ export async function syncProductToShopify(
       );
       colorOptionName = resolved.colorName;
       purityOptionName = resolved.purityName;
+      sizeOptionName = resolved.sizeName;
     }
 
     const remoteVariants = remoteProduct.variants?.nodes || [];
     const standaloneDefault = isStandaloneDefaultVariant(remoteVariants);
 
-    if (input.variants.length === 0) {
+    if (shopifyRows.length === 0) {
       if (remoteVariants.length > 0) {
         try {
           await gql(
@@ -690,7 +742,7 @@ export async function syncProductToShopify(
       const variantsToUpdate: Array<Record<string, unknown>> = [];
       const variantsToCreate: Array<Record<string, unknown>> = [];
 
-      for (const local of input.variants) {
+      for (const local of shopifyRows) {
         let matched = remoteVariants.find(
           (rv) =>
             rv.id === local.shopifyVariantId ||
@@ -702,12 +754,14 @@ export async function syncProductToShopify(
             if (matchedRemoteIds.has(rv.id)) return false;
             const cVal = rv.selectedOptions?.find((o) => optionIsColor(o.name))?.value;
             const pVal = rv.selectedOptions?.find((o) => optionIsPurity(o.name))?.value;
+            const sVal = rv.selectedOptions?.find((o) => optionIsSize(o.name))?.value;
+            if (sizes.length && sVal !== local.size) return false;
             if (colors.length > 0 && purities.length > 0) {
               return cVal === local.color && pVal === local.purityLabel;
             }
             if (colors.length > 0) return cVal === local.color;
             if (purities.length > 0) return pVal === local.purityLabel;
-            return false;
+            return Boolean(sizes.length && sVal === local.size);
           });
         }
 
@@ -719,7 +773,7 @@ export async function syncProductToShopify(
           matched = remoteVariants[0];
         }
 
-        if (!matched && remoteVariants.length === 1 && input.variants.length === 1) {
+        if (!matched && remoteVariants.length === 1 && shopifyRows.length === 1) {
           matched = remoteVariants[0];
         }
 
@@ -732,12 +786,15 @@ export async function syncProductToShopify(
         } else if (purities.length > 0) {
           optionValues.push({ optionName: purityOptionName, name: local.purityLabel });
         }
+        if (sizes.length && local.size) {
+          optionValues.push({ optionName: sizeOptionName, name: local.size });
+        }
 
         const invSku = `${input.sku}${local.skuSuffix ? `-${local.skuSuffix}` : ""}`.slice(0, 100);
 
         if (matched) {
           matchedRemoteIds.add(matched.id);
-          variantIdMap[local.id] = matched.id;
+          if (!variantIdMap[local.originId]) variantIdMap[local.originId] = matched.id;
           variantsToUpdate.push({
             id: matched.id,
             price: priceToShopifyString(local.price),
@@ -813,17 +870,19 @@ export async function syncProductToShopify(
         assertNoUserErrors(createVarRes.productVariantsBulkCreate.userErrors, "Variant create");
 
         const newlyCreated = createVarRes.productVariantsBulkCreate.productVariants || [];
-        for (const local of input.variants) {
-          if (!variantIdMap[local.id]) {
+        for (const local of shopifyRows) {
+          if (!variantIdMap[local.originId]) {
             const found = newlyCreated.find((nc) => {
               const cVal = nc.selectedOptions?.find((o) => optionIsColor(o.name))?.value;
               const pVal = nc.selectedOptions?.find((o) => optionIsPurity(o.name))?.value;
+              const sVal = nc.selectedOptions?.find((o) => optionIsSize(o.name))?.value;
+              if (sizes.length && sVal !== local.size) return false;
               if (colors.length > 0 && purities.length > 0) {
                 return cVal === local.color && pVal === local.purityLabel;
               }
               return true;
             });
-            if (found) variantIdMap[local.id] = found.id;
+            if (found) variantIdMap[local.originId] = found.id;
           }
         }
       }
@@ -884,7 +943,7 @@ export async function syncProductToShopify(
       }
     }
 
-    if (input.variants.length === 0) {
+    if (shopifyRows.length === 0) {
       const defaultVariants = createData.productCreate.product?.variants?.nodes || [];
       if (defaultVariants.length > 0) {
         try {
@@ -914,8 +973,8 @@ export async function syncProductToShopify(
     } else if (productOptions.length === 0) {
       const defaultVariants = createData.productCreate.product?.variants?.nodes || [];
       if (defaultVariants.length > 0) {
-        const firstVar = input.variants[0];
-        variantIdMap[firstVar.id] = defaultVariants[0].id;
+        const firstVar = shopifyRows[0];
+        variantIdMap[firstVar.originId] = defaultVariants[0].id;
         await gql(
           graphql,
           `#graphql
@@ -944,7 +1003,7 @@ export async function syncProductToShopify(
         );
       }
     } else {
-      const variantPayload = input.variants.map((variant) => {
+      const variantPayload = shopifyRows.map((variant) => {
         const optionValues: Array<{ optionName: string; name: string }> = [];
         if (colors.length > 0 && purities.length > 0) {
           optionValues.push({ optionName: "Colour", name: variant.color });
@@ -953,6 +1012,9 @@ export async function syncProductToShopify(
           optionValues.push({ optionName: "Colour", name: variant.color });
         } else if (purities.length > 0) {
           optionValues.push({ optionName: "Purity", name: variant.purityLabel });
+        }
+        if (sizes.length && variant.size) {
+          optionValues.push({ optionName: "Size", name: variant.size });
         }
 
         return {
@@ -1003,10 +1065,13 @@ export async function syncProductToShopify(
       assertNoUserErrors(variantsData.productVariantsBulkCreate.userErrors, "Variant create");
 
       const createdVariants = variantsData.productVariantsBulkCreate.productVariants ?? [];
-      for (const local of input.variants) {
+      for (const local of shopifyRows) {
+        if (variantIdMap[local.originId]) continue;
         const match = createdVariants.find((remote) => {
-          const color = remote.selectedOptions.find((o) => o.name === "Colour")?.value;
-          const purity = remote.selectedOptions.find((o) => o.name === "Purity")?.value;
+          const color = remote.selectedOptions.find((o) => optionIsColor(o.name))?.value;
+          const purity = remote.selectedOptions.find((o) => optionIsPurity(o.name))?.value;
+          const size = remote.selectedOptions.find((o) => optionIsSize(o.name))?.value;
+          if (sizes.length && size !== local.size) return false;
           if (colors.length > 0 && purities.length > 0) {
             return color === local.color && purity === local.purityLabel;
           }
@@ -1014,7 +1079,7 @@ export async function syncProductToShopify(
           if (purities.length > 0) return purity === local.purityLabel;
           return true;
         });
-        if (match) variantIdMap[local.id] = match.id;
+        if (match) variantIdMap[local.originId] = match.id;
       }
     }
   }
@@ -1121,6 +1186,7 @@ export async function syncAllProductPricesToShopify(graphql: GraphqlClient, gold
         shopifyVariantId: variant.shopifyVariantId!,
         price: calculateProductPrice({
           grossWeight: variant.grossWeight,
+          netGoldWeight: variant.netGoldWeight,
           stoneWeight: variant.stoneWeight,
           stoneIncluded: variant.stoneIncluded,
           stoneType: variant.stoneType,
@@ -1136,6 +1202,7 @@ export async function syncAllProductPricesToShopify(graphql: GraphqlClient, gold
           gstPercent: variant.gstPercent,
           pricingMode: product.pricingMode,
           manualPrice: variant.manualPrice,
+          wastageType: variant.wastageType,
         }).total,
       }));
 
@@ -1306,6 +1373,7 @@ export async function syncSingleProductToShopify(
         grossWeight: variant.grossWeight,
         price: calculateProductPrice({
           grossWeight: variant.grossWeight,
+          netGoldWeight: variant.netGoldWeight,
           stoneWeight: variant.stoneWeight,
           stoneIncluded: variant.stoneIncluded,
           stoneType: variant.stoneType,
@@ -1321,9 +1389,20 @@ export async function syncSingleProductToShopify(
           gstPercent: variant.gstPercent,
           pricingMode: product.pricingMode,
           manualPrice: variant.manualPrice,
+          wastageType: variant.wastageType,
         }).total,
         status: variant.status,
       })),
+      sizes: product.isRing
+        ? (() => {
+            try {
+              const parsed = JSON.parse(product.availableSizes || "[]");
+              return Array.isArray(parsed) ? parsed.map(String) : [];
+            } catch {
+              return [];
+            }
+          })()
+        : [],
     },
     product.shopifyProductId,
   );

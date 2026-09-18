@@ -20,6 +20,7 @@ export type MetafieldVariantSource = {
   stoneType: string;
   stoneWeight: number;
   wastagePercent: number;
+  wastageType?: string;
   makingChargeType: string;
   makingChargeValue: number;
   stoneRate: number;
@@ -82,6 +83,7 @@ export function buildVariantPriceBreakup(
     stoneIncluded: variant.stoneIncluded,
     stoneType: variant.stoneType,
     wastagePercent: variant.wastagePercent,
+    wastageType: variant.wastageType,
     makingChargeType: variant.makingChargeType as MakingChargeType,
     makingChargeValue: variant.makingChargeValue,
     stoneRate: variant.stoneRate,

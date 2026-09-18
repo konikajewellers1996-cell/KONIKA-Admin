@@ -1,0 +1,1 @@
+ALTER TABLE "ProductVariant" ADD COLUMN IF NOT EXISTS "wastageType" TEXT NOT NULL DEFAULT 'percent';

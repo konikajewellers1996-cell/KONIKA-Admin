@@ -198,8 +198,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const slabId = String(form.get("id") || "");
 
       if (!qualityId) return { ok: false, message: "Select a diamond quality." };
-      if (!Number.isFinite(centsFrom) || !Number.isFinite(centsTo) || centsFrom <= 0 || centsTo <= 0) {
-        return { ok: false, message: "Enter valid from/to sizes in cents." };
+      if (!Number.isFinite(centsFrom) || !Number.isFinite(centsTo) || centsFrom < 0 || centsTo < 0) {
+        return { ok: false, message: "Enter valid from/to sizes." };
       }
       if (centsFrom > centsTo) {
         return { ok: false, message: "From-cent must be lower than To-cent." };
@@ -281,8 +281,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           if (
             !Number.isFinite(row.centsFrom) ||
             !Number.isFinite(row.centsTo) ||
-            row.centsFrom <= 0 ||
-            row.centsTo <= 0 ||
+            row.centsFrom < 0 ||
+            row.centsTo < 0 ||
             row.centsFrom > row.centsTo ||
             !Number.isFinite(row.pricePerCarat) ||
             row.pricePerCarat < 0
@@ -922,10 +922,9 @@ export default function MetalsPage() {
                     <label>From (cents)</label>
                     <input
                       name="centsFrom"
-                      type="number"
-                      step="any"
-                      min="0.01"
-                      placeholder="1"
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="0.01"
                       value={slabForm.centsFrom}
                       onChange={(e) => setSlabForm((c) => ({ ...c, centsFrom: e.target.value }))}
                       required
@@ -935,9 +934,8 @@ export default function MetalsPage() {
                     <label>To (cents)</label>
                     <input
                       name="centsTo"
-                      type="number"
-                      step="any"
-                      min="0.01"
+                      type="text"
+                      inputMode="decimal"
                       placeholder="5"
                       value={slabForm.centsTo}
                       onChange={(e) => setSlabForm((c) => ({ ...c, centsTo: e.target.value }))}
@@ -949,15 +947,14 @@ export default function MetalsPage() {
                   <div className="field">
                     <label>From (ct)</label>
                     <input
-                      type="number"
-                      step="0.001"
-                      min="0"
-                      placeholder="0.010"
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="0.0001"
                       value={
                         slabForm.centsFrom === ""
                           ? ""
                           : Number.isFinite(Number(slabForm.centsFrom))
-                            ? String(Number((Number(slabForm.centsFrom) / 100).toFixed(4)))
+                            ? String(Number((Number(slabForm.centsFrom) / 100).toPrecision(12)))
                             : ""
                       }
                       onChange={(e) =>
@@ -966,7 +963,7 @@ export default function MetalsPage() {
                           centsFrom:
                             e.target.value === ""
                               ? ""
-                              : String(Number((Number(e.target.value) * 100).toFixed(4))),
+                              : String(Number(e.target.value) * 100),
                         }))
                       }
                     />
@@ -974,15 +971,14 @@ export default function MetalsPage() {
                   <div className="field">
                     <label>To (ct)</label>
                     <input
-                      type="number"
-                      step="0.001"
-                      min="0"
-                      placeholder="0.050"
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="0.0001"
                       value={
                         slabForm.centsTo === ""
                           ? ""
                           : Number.isFinite(Number(slabForm.centsTo))
-                            ? String(Number((Number(slabForm.centsTo) / 100).toFixed(4)))
+                            ? String(Number((Number(slabForm.centsTo) / 100).toPrecision(12)))
                             : ""
                       }
                       onChange={(e) =>
@@ -991,7 +987,7 @@ export default function MetalsPage() {
                           centsTo:
                             e.target.value === ""
                               ? ""
-                              : String(Number((Number(e.target.value) * 100).toFixed(4))),
+                              : String(Number(e.target.value) * 100),
                         }))
                       }
                     />

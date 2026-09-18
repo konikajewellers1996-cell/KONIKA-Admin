@@ -37,6 +37,12 @@ import {
   parseProductExcel,
   type ProductExportVariant,
 } from "../lib/product-excel";
+import {
+  saveProductFormSession,
+  loadProductFormSession,
+  clearProductFormSession,
+  productFormSessionIsEmpty,
+} from "../lib/product-form-session";
 import { ALL_COLLECTIONS_NAME } from "../lib/collections";
 import { ensureAllCollectionsCollection } from "../lib/seed.server";
 import { htmlToPlainText, normalizeImageUrl } from "../lib/text";
@@ -58,6 +64,7 @@ type VariantDraft = {
   purityId: string;
   metalColor: string;
   grossWeight: number;
+  netGoldWeight: number;
   stoneIncluded: boolean;
   stoneType: string;
   stoneWeight: number;
@@ -68,6 +75,7 @@ type VariantDraft = {
   wastagePercent: number;
   makingChargeType: MakingChargeType;
   makingChargeValue: number;
+  wastageType: MakingChargeType;
   otherCharges: number;
   gstPercent: number;
   manualPrice: number;
@@ -97,6 +105,7 @@ type ProductFormState = {
   collectionIds: string[];
   status: string;
   pricingMode: PricingMode;
+  isRing: boolean;
 };
 
 const RING_SIZE_OPTIONS = Array.from({ length: 26 }, (_, i) => String(i + 5));
@@ -116,13 +125,60 @@ function looksLikeRing(name: string, collections: Array<{ name: string }>) {
   return collections.some((item) => /ring/i.test(item.name));
 }
 
+function stoneGramsOnVariant(variant: { stoneIncluded?: boolean; stones?: StoneLine[] }) {
+  if (!variant.stoneIncluded) return 0;
+  return (variant.stones || []).reduce((sum, stone) => sum + stoneWeightInGrams(stone), 0);
+}
+
+function withGrossFromNet<T>(form: T): T {
+  return form;
+}
+
+function netFromStoredGross(gross: number, stones: StoneLine[], stoneIncluded: boolean) {
+  const grams = stoneIncluded ? stones.reduce((sum, stone) => sum + stoneWeightInGrams(stone), 0) : 0;
+  return Number(Math.max(0, (Number(gross) || 0) - grams).toFixed(3));
+}
+
+function ChargeBasisRadios({
+  name,
+  value,
+  onChange,
+}: {
+  name: string;
+  value: string;
+  onChange: (type: MakingChargeType) => void;
+}) {
+  const current = normalizeMakingChargeType(value);
+  return (
+    <div className="radio-inline">
+      {([
+        ["flat", "Flat"],
+        ["per_gram", "Per gram"],
+        ["percent", "Percentage"],
+      ] as const).map(([type, label]) => (
+        <label key={type}>
+          <input
+            type="radio"
+            name={name}
+            checked={current === type}
+            onChange={() => onChange(type)}
+          />
+          {label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function variantPriceInput(
   variant: {
     grossWeight: number;
+    netGoldWeight?: number;
     stoneWeight: number;
     stoneIncluded: boolean;
     stoneType: string;
     wastagePercent: number;
+    wastageType?: string;
     makingChargeType: string;
     makingChargeValue: number;
     stoneRate: number;
@@ -136,10 +192,12 @@ function variantPriceInput(
 ) {
   return {
     grossWeight: variant.grossWeight,
+    netGoldWeight: variant.netGoldWeight,
     stoneWeight: variant.stoneWeight,
     stoneIncluded: variant.stoneIncluded,
     stoneType: variant.stoneType,
     wastagePercent: variant.wastagePercent,
+    wastageType: variant.wastageType,
     makingChargeType: variant.makingChargeType,
     makingChargeValue: variant.makingChargeValue,
     stoneRate: variant.stoneRate,
@@ -215,6 +273,7 @@ const emptyVariant = (metalId = "", purityId = "", metalColor = ""): VariantDraf
   purityId,
   metalColor,
   grossWeight: 0,
+  netGoldWeight: 0,
   stoneIncluded: false,
   stoneType: "Diamond",
   stoneWeight: 0,
@@ -223,6 +282,7 @@ const emptyVariant = (metalId = "", purityId = "", metalColor = ""): VariantDraf
   diamondCount: 1,
   pricePerCarat: 0,
   wastagePercent: 5,
+  wastageType: "percent",
   makingChargeType: "percent",
   makingChargeValue: 10,
   otherCharges: 0,
@@ -247,6 +307,7 @@ const emptyProductForm = (collectionIds: string[] = []): ProductFormState => ({
   collectionIds,
   status: "Active",
   pricingMode: "auto",
+  isRing: false,
 });
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -357,6 +418,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       dimensionWidth: product.dimensionWidth || "",
       dimensionHeight: product.dimensionHeight || "",
       availableSizes: parseAvailableSizes(product.availableSizes),
+      isRing: Boolean(product.isRing),
       collectionIds: product.collections.map((c) => c.id),
       collection: product.collections.map((c) => c.name).join(", ") || "—",
       status: product.status,
@@ -376,6 +438,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         purityId: variant.purityId,
         metalColor: variant.metalColor,
         grossWeight: variant.grossWeight,
+        netGoldWeight: variant.netGoldWeight,
         stoneIncluded: variant.stoneIncluded,
         stoneType: variant.stoneType,
         stoneWeight: variant.stoneWeight,
@@ -385,6 +448,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         diamondCount: variant.diamondCount,
         pricePerCarat: variant.pricePerCarat,
         wastagePercent: variant.wastagePercent,
+        wastageType: (variant.wastageType as MakingChargeType) || "percent",
         makingChargeType: variant.makingChargeType as MakingChargeType,
         makingChargeValue: variant.makingChargeValue,
         otherCharges: variant.otherCharges,
@@ -504,6 +568,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           purityId: string;
           metalColor: string;
           grossWeight: number;
+          netGoldWeight?: number;
           stoneIncluded: boolean;
           stoneType: string;
           stoneWeight: number;
@@ -512,8 +577,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           diamondCount: number;
           pricePerCarat: number;
           wastagePercent: number;
+          wastageType?: string;
           makingChargeType: string;
           makingChargeValue: number;
+          otherCharges?: number;
+          gstPercent?: number;
+          manualPrice?: number;
           stoneRate: number;
           status: string;
         }> = [];
@@ -614,6 +683,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             diamondCount,
             pricePerCarat,
             wastagePercent: Number(row.wastagePercent) || 0,
+            wastageType: "percent",
             makingChargeType: row.makingChargeType === "per_gram" ? "per_gram" : row.makingChargeType === "fixed" || row.makingChargeType === "flat" ? "flat" : "percent",
             makingChargeValue: Number(row.makingChargeValue) || 0,
             otherCharges: 0,
@@ -673,17 +743,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       };
     }
 
-    if (intent !== "create" && intent !== "update") {
+    if (intent !== "create" && intent !== "update" && intent !== "autosave-draft") {
       return { ok: false, message: "Unknown action." };
     }
 
+    const isAutosave = intent === "autosave-draft";
     const editingId = String(form.get("productId") || "") || null;
-    if (intent === "update" && !editingId) {
+    if ((intent === "update" || isAutosave) && !editingId && intent === "update") {
       return { ok: false, message: "Missing product id for update." };
     }
 
-    const sku = String(form.get("sku") || "").trim();
-    const name = String(form.get("name") || "").trim();
+    const sku =
+      String(form.get("sku") || "").trim() ||
+      (isAutosave ? `DRAFT-${Date.now().toString().slice(-8)}` : "");
+    const name =
+      String(form.get("name") || "").trim() ||
+      (isAutosave ? "Untitled draft" : "");
     const description = htmlToPlainText(String(form.get("description") || "").trim());
     const gender = String(form.get("gender") || "Unisex");
     const dimensionWidth = String(form.get("dimensionWidth") || "").trim();
@@ -697,14 +772,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     } catch {
       availableSizes = [];
     }
-    const availableSizesJson = JSON.stringify(availableSizes);
+    const isRing = String(form.get("isRing") || "") === "true";
+    const availableSizesJson = JSON.stringify(isRing ? availableSizes : []);
     const collectionIds = form.getAll("collectionIds").map(String);
-    const status = String(form.get("status") || "Active");
+    const status = isAutosave ? "Draft" : String(form.get("status") || "Active");
     const pricingMode = normalizePricingMode(String(form.get("pricingMode") || "auto"));
     const variantsRaw = String(form.get("variantsJson") || "[]");
 
-    if (!sku || !name) {
+    if (!isAutosave && (!sku || !name)) {
       return { ok: false, message: "SKU and product name are required." };
+    }
+    if (!isAutosave && isRing && !availableSizes.length) {
+      return { ok: false, message: "This is a ring — select at least one size variant." };
     }
 
     const allCollections = await ensureAllCollectionsCollection();
@@ -734,6 +813,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             purityId: defaultPurity.id,
             metalColor: defaultMetal.color || defaultMetal.name,
             grossWeight: 0,
+            netGoldWeight: 0,
             stoneIncluded: false,
             stoneType: "None",
             stoneWeight: 0,
@@ -741,6 +821,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             diamondCount: 1,
             pricePerCarat: 0,
             wastagePercent: 5,
+            wastageType: "percent",
             makingChargeType: "percent",
             makingChargeValue: 10,
             otherCharges: 0,
@@ -845,6 +926,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             : null,
         });
         if (!quote.ok) {
+          if (isAutosave) {
+            quotedStones.push(stone);
+            continue;
+          }
           return { ok: false, message: quote.message };
         }
         quotedStones.push({
@@ -855,11 +940,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
       }
       const legacy = stonesToLegacy(quotedStones);
-      quotedDrafts.push({
-        ...draft,
-        ...legacy,
-        stones: quotedStones,
-      });
+      quotedDrafts.push(
+        withGrossFromNet({
+          ...draft,
+          ...legacy,
+          stones: quotedStones,
+        }),
+      );
     }
 
     const variantCreateData = quotedDrafts.map((draft, index) => ({
@@ -867,6 +954,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       purityId: draft.purityId,
       metalColor: draft.metalColor,
       grossWeight: Number(draft.grossWeight) || 0,
+      netGoldWeight: Number(draft.netGoldWeight) || 0,
       stoneIncluded: Boolean(draft.stoneIncluded),
       stoneType: draft.stoneIncluded ? draft.stoneType : "None",
       stoneWeight: draft.stoneIncluded ? Number(draft.stoneWeight) || 0 : 0,
@@ -875,6 +963,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       diamondCount: draft.stoneIncluded ? Number(draft.diamondCount) || 1 : 1,
       pricePerCarat: draft.stoneIncluded ? Number(draft.pricePerCarat) || 0 : 0,
       wastagePercent: Number(draft.wastagePercent) || 0,
+      wastageType: normalizeMakingChargeType(draft.wastageType || "percent"),
       makingChargeType: normalizeMakingChargeType(draft.makingChargeType),
       makingChargeValue: Number(draft.makingChargeValue) || 0,
       otherCharges: Number(draft.otherCharges) || 0,
@@ -888,13 +977,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }));
 
     let productId = editingId;
+    let savedExisting = false;
 
-    if (intent === "update" && editingId) {
+    if ((intent === "update" || isAutosave) && editingId) {
       const current = await prisma.product.findUnique({
         where: { id: editingId },
         include: { variants: true },
       });
-      if (!current) return { ok: false, message: "Product not found." };
+      if (!current) {
+        if (!isAutosave) return { ok: false, message: "Product not found." };
+      } else {
+        savedExisting = true;
 
       const currentVariantMap = new Map(current.variants.map((v) => [v.id, v]));
       const keptVariantIds: string[] = [];
@@ -911,6 +1004,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               purityId: vData.purityId,
               metalColor: vData.metalColor,
               grossWeight: vData.grossWeight,
+              netGoldWeight: vData.netGoldWeight,
               stoneIncluded: vData.stoneIncluded,
               stoneType: vData.stoneType,
               stoneWeight: vData.stoneWeight,
@@ -919,6 +1013,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               diamondCount: vData.diamondCount,
               pricePerCarat: vData.pricePerCarat,
               wastagePercent: vData.wastagePercent,
+              wastageType: vData.wastageType,
               makingChargeType: vData.makingChargeType,
               makingChargeValue: vData.makingChargeValue,
               otherCharges: vData.otherCharges,
@@ -963,6 +1058,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           dimensionWidth,
           dimensionHeight,
           availableSizes: availableSizesJson,
+          isRing,
           pricingMode,
           status,
           collections: {
@@ -970,7 +1066,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           },
         },
       });
-    } else {
+      }
+    }
+    if (!savedExisting) {
       const created = await prisma.product.create({
         data: {
           sku,
@@ -983,6 +1081,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           dimensionWidth,
           dimensionHeight,
           availableSizes: availableSizesJson,
+          isRing,
           pricingMode,
           status,
           variants: { create: variantCreateData },
@@ -995,6 +1094,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     // Sync to Shopify automatically!
+    if (!isAutosave) {
     try {
       await syncSingleProductToShopify(productId!, admin.graphql);
     } catch (syncErr) {
@@ -1004,6 +1104,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         message: `"${name}" saved locally, but failed to sync to Shopify: ${syncErr instanceof Error ? syncErr.message : "unknown error"}.`,
         clearEdit: true,
         productId,
+      };
+    }
+    }
+
+    if (isAutosave) {
+      return {
+        ok: true,
+        message: "Draft saved.",
+        clearEdit: false,
+        productId,
+        draftSaved: true,
       };
     }
 
@@ -1061,13 +1172,22 @@ export default function ProductsPage() {
   const [enableVariants, setEnableVariants] = useState(false);
   const [dragImageKey, setDragImageKey] = useState<string | null>(null);
   const [viewingProductId, setViewingProductId] = useState<string | null>(null);
+  const [customRingSize, setCustomRingSize] = useState("");
   const hydratedEditIdRef = useRef<string | null>(null);
+  const sessionRestoredRef = useRef(false);
+  const persistDraftOnLeaveRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (actionData && "clearEdit" in actionData && actionData.clearEdit && actionData.ok) {
+      clearProductFormSession();
       resetForm();
       hydratedEditIdRef.current = null;
+      sessionRestoredRef.current = false;
       setSearchParams({ view: "catalog" });
+    }
+    if (actionData && "draftSaved" in actionData && actionData.draftSaved && actionData.productId) {
+      setEditingId(actionData.productId);
+      hydratedEditIdRef.current = actionData.productId;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actionData]);
@@ -1227,44 +1347,50 @@ export default function ProductsPage() {
               : Number(item.stone.pricePerCarat) || 0,
         }))
       : [];
-    return {
+    return withGrossFromNet({
       ...form,
       ...stonesToLegacy(stones),
       stones,
       stoneRate: quotedStoneRate,
       pricePerCarat: quotedPricePerCarat,
-    };
+    });
   };
 
   const updateStoneLine = (key: string, patch: Partial<StoneLine>) => {
-    setVariantForm((current) => ({
-      ...current,
-      stones: (current.stones || []).map((stone) => {
-        if (stone.key !== key) return stone;
-        const next = { ...stone, ...patch };
-        if (patch.stoneType) {
-          const gem = gemstones.find((item) => item.name === patch.stoneType);
-          next.gemstoneTypeId = gem?.id || "";
-          if (!isDiamondStone(patch.stoneType)) {
-            next.diamondQualityId = "";
-            next.diamondCount = 1;
-            next.pricePerCarat = 0;
-            if (gem && Number(gem.defaultRate) > 0) next.rate = Number(gem.defaultRate);
+    setVariantForm((current) =>
+      withGrossFromNet({
+        ...current,
+        stones: (current.stones || []).map((stone) => {
+          if (stone.key !== key) return stone;
+          const next = { ...stone, ...patch };
+          if (patch.stoneType) {
+            const gem = gemstones.find((item) => item.name === patch.stoneType);
+            next.gemstoneTypeId = gem?.id || "";
+            if (!isDiamondStone(patch.stoneType)) {
+              next.diamondQualityId = "";
+              next.diamondCount = 1;
+              next.pricePerCarat = 0;
+              next.weight = 0;
+              next.rateMode = "flat";
+              if (gem && Number(gem.defaultRate) > 0) next.rate = Number(gem.defaultRate);
+            }
           }
-        }
-        return next;
+          return next;
+        }),
       }),
-    }));
+    );
   };
 
   const preview = useMemo(
     () =>
       calculateProductPrice({
         grossWeight: variantForm.grossWeight,
+        netGoldWeight: variantForm.netGoldWeight,
         stoneWeight: variantForm.stoneWeight,
         stoneIncluded: variantForm.stoneIncluded,
         stoneType: variantForm.stoneType,
         wastagePercent: variantForm.wastagePercent,
+        wastageType: variantForm.wastageType,
         makingChargeType: variantForm.makingChargeType,
         makingChargeValue: variantForm.makingChargeValue,
         stoneRate: quotedStoneRate,
@@ -1306,7 +1432,7 @@ export default function ProductsPage() {
 
     const list = [...variants];
     const canIncludeDraft =
-      Number(variantForm.grossWeight) > 0 &&
+      (Number(variantForm.netGoldWeight) > 0 || Number(variantForm.grossWeight) > 0) &&
       Boolean(variantForm.metalId) &&
       Boolean(variantForm.purityId) &&
       !list.some(
@@ -1406,7 +1532,39 @@ export default function ProductsPage() {
     );
   };
 
+  const applyProductFormSession = (session: NonNullable<ReturnType<typeof loadProductFormSession>>) => {
+    sessionRestoredRef.current = true;
+    setEditingId(session.editingId);
+    hydratedEditIdRef.current = session.editingId || "__session-new__";
+    setEditingVariantKey(session.editingVariantKey);
+    setEnableVariants(Boolean(session.enableVariants));
+    if (session.productForm && typeof session.productForm === "object") {
+      setProductForm({
+        ...emptyProductForm(),
+        ...(session.productForm as ProductFormState),
+      });
+    }
+    if (session.variantForm && typeof session.variantForm === "object") {
+      setVariantForm({
+        ...emptyVariant(firstMetal?.id ?? "", firstPurity?.id ?? "", firstMetal?.color ?? ""),
+        ...(session.variantForm as VariantDraft),
+      });
+    }
+    setVariants(Array.isArray(session.variants) ? (session.variants as VariantDraft[]) : []);
+    setSelectedCollections(session.selectedCollections || []);
+    setProductImages(session.productImages || []);
+    setDraftPreview(session.draftPreview || "");
+  };
+
   const startCreate = () => {
+    const session = loadProductFormSession();
+    if (!productFormSessionIsEmpty(session) && session) {
+      applyProductFormSession(session);
+      setSearchParams(
+        session.editingId ? { view: "edit", id: session.editingId } : { view: "edit" },
+      );
+      return;
+    }
     resetForm();
     hydratedEditIdRef.current = null;
     setSearchParams({ view: "edit" });
@@ -1430,6 +1588,7 @@ export default function ProductsPage() {
       collectionIds: product.collectionIds,
       status: product.status,
       pricingMode: normalizePricingMode(product.pricingMode),
+      isRing: Boolean(product.isRing),
     });
     const selectedColls = product.collectionIds
       .map((id) => {
@@ -1465,14 +1624,23 @@ export default function ProductsPage() {
     setDraftFile(null);
     if (productImageInputRef.current) productImageInputRef.current.value = "";
 
-    const mappedVariants = product.variants.map((variant) => ({
+    const mappedVariants = product.variants.map((variant) => {
+      const stones = Array.isArray(variant.stones)
+        ? variant.stones
+        : parseStonesJson("", variant);
+      const stoneIncluded = Boolean(variant.stoneIncluded);
+      return {
       key: variant.id,
       id: variant.id,
       metalId: variant.metalId,
       purityId: variant.purityId,
       metalColor: variant.metalColor,
       grossWeight: Number(variant.grossWeight) || 0,
-      stoneIncluded: Boolean(variant.stoneIncluded),
+      netGoldWeight:
+        Number(variant.netGoldWeight) > 0
+          ? Number(variant.netGoldWeight)
+          : netFromStoredGross(Number(variant.grossWeight) || 0, stones, stoneIncluded),
+      stoneIncluded,
       stoneType: variant.stoneType || "Diamond",
       stoneWeight: Number(variant.stoneWeight) || 0,
       diamondCategory: variant.diamondCategory || "Round",
@@ -1480,20 +1648,20 @@ export default function ProductsPage() {
       diamondCount: Number(variant.diamondCount) || 1,
       pricePerCarat: Number(variant.pricePerCarat) || 0,
       wastagePercent: Number(variant.wastagePercent) || 0,
+      wastageType: normalizeMakingChargeType(variant.wastageType || "percent"),
       makingChargeType: normalizeMakingChargeType(variant.makingChargeType),
       makingChargeValue: Number(variant.makingChargeValue) || 0,
       otherCharges: Number(variant.otherCharges) || 0,
       gstPercent: Number.isFinite(Number(variant.gstPercent)) ? Number(variant.gstPercent) : 3,
       manualPrice: Number(variant.manualPrice) || 0,
       stoneRate: Number(variant.stoneRate) || 0,
-      stones: Array.isArray(variant.stones)
-        ? variant.stones
-        : parseStonesJson("", variant),
+      stones,
       status: variant.status,
       imagePreview: variant.imageUrl || "",
       existingImageUrl: variant.imageUrl || "",
       existingFileId: variant.shopifyFileId,
-    }));
+    };
+    });
     setVariants(mappedVariants);
 
     const firstVariant = mappedVariants[0];
@@ -1518,16 +1686,134 @@ export default function ProductsPage() {
     setSearchParams({ view: "edit", id: product.id });
   };
 
+  useEffect(() => {
+    if (view !== "edit") return;
+    if (sessionRestoredRef.current) return;
+    const session = loadProductFormSession();
+    if (productFormSessionIsEmpty(session) || !session) return;
+    if (editIdFromUrl && session.editingId && session.editingId !== editIdFromUrl) return;
+    applyProductFormSession(session);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, editIdFromUrl]);
+
   // Open edit form when arriving from dashboard (or deep link) with ?id=
   // Hydrate once per product id — never re-run on catalog refreshes or local form edits
   // (re-running was duplicating images when collections were changed).
   useEffect(() => {
     if (view !== "edit" || !editIdFromUrl) return;
     if (hydratedEditIdRef.current === editIdFromUrl) return;
+    if (sessionRestoredRef.current && hydratedEditIdRef.current === editIdFromUrl) return;
     if (!catalog.some((p) => p.id === editIdFromUrl)) return;
     startEdit(editIdFromUrl);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, editIdFromUrl, catalog]);
+
+  useEffect(() => {
+    if (!showForm) return;
+    const payload = {
+      editingId,
+      productForm,
+      variantForm,
+      variants,
+      enableVariants,
+      selectedCollections,
+      productImages,
+      editingVariantKey,
+      draftPreview,
+    };
+    if (productFormSessionIsEmpty(payload)) return;
+    saveProductFormSession(payload);
+  }, [
+    showForm,
+    editingId,
+    productForm,
+    variantForm,
+    variants,
+    enableVariants,
+    selectedCollections,
+    productImages,
+    editingVariantKey,
+    draftPreview,
+  ]);
+
+  const persistDraftOnLeave = () => {
+    if (!showForm) return;
+    const payload = {
+      editingId,
+      productForm,
+      variantForm,
+      variants,
+      enableVariants,
+      selectedCollections,
+      productImages,
+      editingVariantKey,
+      draftPreview,
+    };
+    if (productFormSessionIsEmpty(payload)) return;
+    saveProductFormSession(payload);
+    const fd = new FormData();
+    fd.set("intent", "autosave-draft");
+    if (editingId) fd.set("productId", editingId);
+    fd.set("sku", productForm.sku);
+    fd.set("name", productForm.name);
+    fd.set("description", productForm.description);
+    fd.set("gender", productForm.gender);
+    fd.set("dimensionWidth", productForm.dimensionWidth);
+    fd.set("dimensionHeight", productForm.dimensionHeight);
+    fd.set("availableSizes", JSON.stringify(productForm.availableSizes));
+    fd.set("isRing", String(productForm.isRing));
+    fd.set("pricingMode", productForm.pricingMode);
+    fd.set("status", "Draft");
+    selectedCollections.forEach((c) => fd.append("collectionIds", c.id));
+    fd.set(
+      "existingImagesJson",
+      JSON.stringify(
+        productImages
+          .filter((image) => image.url)
+          .map((image) => ({ url: image.url, shopifyFileId: image.shopifyFileId })),
+      ),
+    );
+    let list = [...variants];
+    if (
+      (Number(variantForm.netGoldWeight) > 0 || Number(variantForm.grossWeight) > 0) &&
+      variantForm.metalId &&
+      variantForm.purityId
+    ) {
+      const key = editingVariantKey || variants[0]?.key || emptyVariant().key;
+      const current = {
+        ...flattenQuotedVariant(variantForm),
+        key,
+        id: variants.find((v) => v.key === key)?.id || variantForm.id,
+      };
+      if (editingVariantKey || !enableVariants || list.length === 0) {
+        list = enableVariants
+          ? list.some((v) => v.key === key)
+            ? list.map((v) => (v.key === key ? { ...v, ...current } : v))
+            : [...list, current]
+          : [current];
+      }
+    }
+    fd.set(
+      "variantsJson",
+      JSON.stringify(list.map(({ imagePreview: _p, ...rest }) => rest)),
+    );
+    submit(fd, { method: "post", encType: "multipart/form-data", navigate: false });
+  };
+  persistDraftOnLeaveRef.current = persistDraftOnLeave;
+
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") persistDraftOnLeaveRef.current();
+    };
+    const onPageHide = () => persistDraftOnLeaveRef.current();
+    document.addEventListener("visibilitychange", onHidden);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      persistDraftOnLeaveRef.current();
+      document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, []);
 
   const reorderProductImages = (fromKey: string, toKey: string) => {
     if (!fromKey || !toKey || fromKey === toKey) return;
@@ -1555,10 +1841,12 @@ export default function ProductsPage() {
 
   const startEditVariant = (variant: VariantDraft) => {
     setEditingVariantKey(variant.key);
-    setVariantForm({
-      ...variant,
-      imagePreview: variant.imagePreview || variant.existingImageUrl || "",
-    });
+    setVariantForm(
+      withGrossFromNet({
+        ...variant,
+        imagePreview: variant.imagePreview || variant.existingImageUrl || "",
+      }),
+    );
     setDraftPreview(variant.imagePreview || variant.existingImageUrl || "");
     setDraftFile(variantFileMap[variant.key] ?? null);
   };
@@ -1576,7 +1864,7 @@ export default function ProductsPage() {
 
   const saveVariantToList = () => {
     if (!variantForm.metalId || !variantForm.purityId) return;
-    if (!(Number(variantForm.grossWeight) > 0)) return;
+    if (!(Number(variantForm.netGoldWeight) > 0) && !(Number(variantForm.grossWeight) > 0)) return;
     if (productForm.pricingMode === "manual" && !(Number(variantForm.manualPrice) > 0)) return;
     if (variantForm.stoneIncluded && !diamondQuote.ok) return;
 
@@ -1635,6 +1923,10 @@ export default function ProductsPage() {
 
   const handleSaveSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (productForm.isRing && !productForm.availableSizes.length) {
+      window.alert("This is a ring — select at least one size variant.");
+      return;
+    }
     const form = event.currentTarget;
     const fd = new FormData(form);
     fd.set("intent", editingId ? "update" : "create");
@@ -1654,7 +1946,7 @@ export default function ProductsPage() {
     let list = [...variants];
     if (!enableVariants) {
       // Direct product: persist only the current metal/pricing form as a single entry
-      if (!(Number(variantForm.grossWeight) > 0)) return;
+      if (!(Number(variantForm.netGoldWeight) > 0) && !(Number(variantForm.grossWeight) > 0)) return;
       if (productForm.pricingMode === "manual" && !(Number(variantForm.manualPrice) > 0)) return;
       if (variantForm.stoneIncluded && !diamondQuote.ok) return;
       const directKey = editingVariantKey || variants[0]?.key || emptyVariant().key;
@@ -1670,7 +1962,7 @@ export default function ProductsPage() {
       ];
       if (draftFile) nextVariantFiles[directKey] = draftFile;
     } else if (editingVariantKey) {
-      if (!(Number(variantForm.grossWeight) > 0)) return;
+      if (!(Number(variantForm.netGoldWeight) > 0) && !(Number(variantForm.grossWeight) > 0)) return;
       if (productForm.pricingMode === "manual" && !(Number(variantForm.manualPrice) > 0)) return;
       if (variantForm.stoneIncluded && !diamondQuote.ok) return;
       if (draftFile) nextVariantFiles[editingVariantKey] = draftFile;
@@ -1688,7 +1980,7 @@ export default function ProductsPage() {
       );
     } else {
       const canIncludeDraft =
-        Number(variantForm.grossWeight) > 0 &&
+        (Number(variantForm.netGoldWeight) > 0 || Number(variantForm.grossWeight) > 0) &&
         Boolean(variantForm.metalId) &&
         Boolean(variantForm.purityId) &&
         !list.some(
@@ -1788,8 +2080,7 @@ export default function ProductsPage() {
               type="button"
               className="btn"
               onClick={() => {
-                resetForm();
-                hydratedEditIdRef.current = null;
+                persistDraftOnLeaveRef.current();
                 setSearchParams({ view: "catalog" });
               }}
             >
@@ -1811,7 +2102,7 @@ export default function ProductsPage() {
         </div>
       </div>
 
-              {actionData?.message ? (
+              {actionData?.message && !("draftSaved" in actionData && actionData.draftSaved) ? (
         <div className={`flash ${actionData.ok ? "ok" : "err"}`} role="status">{actionData.message}</div>
       ) : null}
 
@@ -1927,16 +2218,37 @@ export default function ProductsPage() {
                   </div>
                 </div>
                 <input type="hidden" name="availableSizes" value={JSON.stringify(productForm.availableSizes)} />
+                <input type="hidden" name="isRing" value={String(productForm.isRing)} />
                 <div className="field">
-                  <label>
-                    {looksLikeRing(productForm.name, selectedCollections)
-                      ? "Available ring sizes"
-                      : "Available sizes (optional)"}
-                  </label>
+                  <label>Is this a ring?</label>
+                  <div className="radio-inline">
+                    <label>
+                      <input
+                        type="radio"
+                        name="is-ring"
+                        checked={!productForm.isRing}
+                        onChange={() =>
+                          setProductForm((c) => ({ ...c, isRing: false, availableSizes: [] }))
+                        }
+                      />
+                      No
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="is-ring"
+                        checked={productForm.isRing}
+                        onChange={() => setProductForm((c) => ({ ...c, isRing: true }))}
+                      />
+                      Yes
+                    </label>
+                  </div>
+                </div>
+                {productForm.isRing ? (
+                <div className="field">
+                  <label>Ring size variants</label>
                   <div className="hint" style={{ marginBottom: 8 }}>
-                    {looksLikeRing(productForm.name, selectedCollections)
-                      ? "This looks like a ring. Select the sizes customers can choose on the product page."
-                      : "Use this for rings or sized jewellery. Leave empty if size is not needed."}
+                    Select every size this ring should be available in. Each size is a storefront size variant.
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                     {RING_SIZE_OPTIONS.map((size) => {
@@ -1952,7 +2264,7 @@ export default function ProductsPage() {
                               availableSizes: selected
                                 ? current.availableSizes.filter((item) => item !== size)
                                 : [...current.availableSizes, size].sort(
-                                    (a, b) => Number(a) - Number(b),
+                                    (a, b) => Number(a) - Number(b) || a.localeCompare(b),
                                   ),
                             }))
                           }
@@ -1962,12 +2274,47 @@ export default function ProductsPage() {
                       );
                     })}
                   </div>
+                  <div className="field-row" style={{ marginTop: 10 }}>
+                    <div className="field">
+                      <label>Add custom size</label>
+                      <input
+                        value={customRingSize}
+                        onChange={(e) => setCustomRingSize(e.target.value)}
+                        placeholder="e.g. 12.5 or US 7"
+                      />
+                    </div>
+                    <div className="field" style={{ justifyContent: "flex-end" }}>
+                      <label>&nbsp;</label>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          const size = customRingSize.trim();
+                          if (!size) return;
+                          setProductForm((current) => ({
+                            ...current,
+                            availableSizes: current.availableSizes.includes(size)
+                              ? current.availableSizes
+                              : [...current.availableSizes, size],
+                          }));
+                          setCustomRingSize("");
+                        }}
+                      >
+                        Add size variant
+                      </button>
+                    </div>
+                  </div>
                   {productForm.availableSizes.length ? (
                     <div className="hint" style={{ marginTop: 8 }}>
-                      Selected: {productForm.availableSizes.join(", ")}
+                      Size variants: {productForm.availableSizes.join(", ")}
                     </div>
-                  ) : null}
+                  ) : (
+                    <div className="hint" style={{ marginTop: 8 }}>
+                      Choose at least one size before saving.
+                    </div>
+                  )}
                 </div>
+                ) : null}
 
                 <div className="field">
                   <label>Product images (multiple — Shopify Files)</label>
@@ -2197,51 +2544,25 @@ export default function ProductsPage() {
                     </select>
                   </div>
                   <div className="field">
-                    <label>Gross weight (g)</label>
+                    <label>Net gold weight (g)</label>
                     <input
                       type="number"
-                      step="0.001"
+                      step="any"
                       min="0"
                       value={
-                        Number.isFinite(variantForm.grossWeight)
-                          ? variantForm.grossWeight
+                        Number.isFinite(variantForm.netGoldWeight)
+                          ? variantForm.netGoldWeight
                           : ""
                       }
                       onChange={(e) =>
                         setVariantForm((c) => ({
                           ...c,
-                          grossWeight: Number(e.target.value),
+                          netGoldWeight: Number(e.target.value) || 0,
                         }))
                       }
                       placeholder="0.00"
                     />
-                  </div>
-                  <div className="field">
-                    <label>Net weight (g)</label>
-                    <input
-                      type="number"
-                      step="0.001"
-                      min="0"
-                      value={
-                        (() => {
-                          const net = (variantForm.grossWeight || 0) - formStoneGrams;
-                          return net > 0 ? Number(net.toFixed(3)) : "";
-                        })()
-                      }
-                      onChange={(e) => {
-                        const newNet = Number(e.target.value) || 0;
-                        setVariantForm((c) => {
-                          const grams = c.stoneIncluded
-                            ? (c.stones || []).reduce((sum, stone) => sum + stoneWeightInGrams(stone), 0)
-                            : 0;
-                          return {
-                            ...c,
-                            grossWeight: Number((newNet + grams).toFixed(3)),
-                          };
-                        });
-                      }}
-                      placeholder="0.00"
-                    />
+                    <div className="hint">Gold weight. Entered separately from gross weight.</div>
                   </div>
                 </div>
 
@@ -2262,15 +2583,14 @@ export default function ProductsPage() {
                   ) : null}
                 </div>
 
-                <div className="field-row">
-                  <div className="field">
+                <div className="field">
                     <label>Stone?</label>
                     <select
                       value={String(variantForm.stoneIncluded)}
                       onChange={(e) =>
                         setVariantForm((c) => {
                           const included = e.target.value === "true";
-                          return {
+                          return withGrossFromNet({
                             ...c,
                             stoneIncluded: included,
                             stones: included
@@ -2278,7 +2598,7 @@ export default function ProductsPage() {
                                 ? c.stones
                                 : [emptyStoneLine()]
                               : [],
-                          };
+                          });
                         })
                       }
                     >
@@ -2286,22 +2606,6 @@ export default function ProductsPage() {
                       <option value="true">With stone</option>
                     </select>
                   </div>
-                  <div className="field">
-                    <label>Wastage %</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={variantForm.wastagePercent}
-                      onChange={(e) =>
-                        setVariantForm((c) => ({
-                          ...c,
-                          wastagePercent: Number(e.target.value),
-                        }))
-                      }
-                    />
-                  </div>
-                </div>
 
                 {variantForm.stoneIncluded ? (
                   <div style={{ display: "grid", gap: 14 }}>
@@ -2338,7 +2642,7 @@ export default function ProductsPage() {
                                 <label>Total carat weight</label>
                                 <input
                                   type="number"
-                                  step="0.001"
+                                  step="any"
                                   min="0"
                                   placeholder="2.000"
                                   value={Number.isFinite(stone.weight) ? stone.weight : ""}
@@ -2347,20 +2651,7 @@ export default function ProductsPage() {
                                   }
                                 />
                               </div>
-                            ) : (
-                              <div className="field">
-                                <label>Stone weight (g)</label>
-                                <input
-                                  type="number"
-                                  step="0.001"
-                                  min="0"
-                                  value={Number.isFinite(stone.weight) ? stone.weight : ""}
-                                  onChange={(e) =>
-                                    updateStoneLine(stone.key, { weight: Number(e.target.value) })
-                                  }
-                                />
-                              </div>
-                            )}
+                            ) : null}
                           </div>
                           {diamond ? (
                             <>
@@ -2441,40 +2732,18 @@ export default function ProductsPage() {
                             </>
                           ) : (
                             <div className="field">
-                              <label>Gemstone price</label>
-                              <div className="radio-inline">
-                                <label>
-                                  <input
-                                    type="radio"
-                                    name={`gem-rate-${stone.key}`}
-                                    checked={(stone.rateMode || "per_gram") !== "flat"}
-                                    onChange={() => updateStoneLine(stone.key, { rateMode: "per_gram" })}
-                                  />
-                                  Per gram
-                                </label>
-                                <label>
-                                  <input
-                                    type="radio"
-                                    name={`gem-rate-${stone.key}`}
-                                    checked={stone.rateMode === "flat"}
-                                    onChange={() => updateStoneLine(stone.key, { rateMode: "flat" })}
-                                  />
-                                  Flat
-                                </label>
-                              </div>
+                              <label>Gemstone price (flat)</label>
                               <input
                                 type="number"
-                                step="0.01"
+                                step="any"
                                 min="0"
                                 value={Number.isFinite(stone.rate) ? stone.rate : ""}
                                 onChange={(e) =>
-                                  updateStoneLine(stone.key, { rate: Number(e.target.value) })
+                                  updateStoneLine(stone.key, { rate: Number(e.target.value), rateMode: "flat" })
                                 }
                               />
                               <div className="hint">
-                                {stone.rateMode === "flat"
-                                  ? "This amount is added as the full gemstone charge."
-                                  : "Charge = weight (g) × this rate."}
+                                Flat charge for this gemstone. Weight is not used.
                               </div>
                             </div>
                           )}
@@ -2483,10 +2752,12 @@ export default function ProductsPage() {
                               type="button"
                               className="btn small"
                               onClick={() =>
-                                setVariantForm((current) => ({
-                                  ...current,
-                                  stones: current.stones.filter((item) => item.key !== stone.key),
-                                }))
+                                setVariantForm((current) =>
+                                  withGrossFromNet({
+                                    ...current,
+                                    stones: current.stones.filter((item) => item.key !== stone.key),
+                                  }),
+                                )
                               }
                             >
                               Remove stone
@@ -2499,10 +2770,12 @@ export default function ProductsPage() {
                       type="button"
                       className="btn"
                       onClick={() =>
-                        setVariantForm((current) => ({
-                          ...current,
-                          stones: [...(current.stones || []), emptyStoneLine(stoneOptions[1] || "Diamond")],
-                        }))
+                        setVariantForm((current) =>
+                          withGrossFromNet({
+                            ...current,
+                            stones: [...(current.stones || []), emptyStoneLine(stoneOptions[1] || "Diamond")],
+                          }),
+                        )
                       }
                     >
                       Add another stone
@@ -2512,6 +2785,58 @@ export default function ProductsPage() {
                         Gemstones (Ruby, Emerald, etc.) are managed under Metals &amp; purity → Gemstones.
                       </div>
                     ) : null}
+                  </div>
+                ) : null}
+
+                <div className="field">
+                  <label>Gross weight (g)</label>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={
+                      Number.isFinite(variantForm.grossWeight) ? variantForm.grossWeight : ""
+                    }
+                    onChange={(e) =>
+                      setVariantForm((c) => ({
+                        ...c,
+                        grossWeight: Number(e.target.value) || 0,
+                      }))
+                    }
+                    placeholder="0.00"
+                  />
+                  <div className="hint">
+                    Full piece weight. Independent of net gold.
+                  </div>
+                </div>
+
+                {productForm.pricingMode === "auto" ? (
+                  <div className="field">
+                    <label>Wastage</label>
+                    <ChargeBasisRadios
+                      name="wastage-basis"
+                      value={variantForm.wastageType}
+                      onChange={(type) => setVariantForm((c) => ({ ...c, wastageType: type }))}
+                    />
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={variantForm.wastagePercent}
+                      onChange={(e) =>
+                        setVariantForm((c) => ({
+                          ...c,
+                          wastagePercent: Number(e.target.value),
+                        }))
+                      }
+                    />
+                    <div className="hint">
+                      {normalizeMakingChargeType(variantForm.wastageType) === "per_gram"
+                        ? "₹ per gram of net gold"
+                        : normalizeMakingChargeType(variantForm.wastageType) === "flat"
+                          ? "Flat wastage amount"
+                          : "Percent extra gold on net weight"}
+                    </div>
                   </div>
                 ) : null}
 
@@ -2536,41 +2861,11 @@ export default function ProductsPage() {
                 <div className="field-row">
                   <div className="field">
                     <label>Making charge</label>
-                    <div className="radio-inline">
-                      <label>
-                        <input
-                          type="radio"
-                          name="making-basis"
-                          checked={normalizeMakingChargeType(variantForm.makingChargeType) === "flat"}
-                          onChange={() =>
-                            setVariantForm((c) => ({ ...c, makingChargeType: "flat" }))
-                          }
-                        />
-                        Flat
-                      </label>
-                      <label>
-                        <input
-                          type="radio"
-                          name="making-basis"
-                          checked={normalizeMakingChargeType(variantForm.makingChargeType) === "per_gram"}
-                          onChange={() =>
-                            setVariantForm((c) => ({ ...c, makingChargeType: "per_gram" }))
-                          }
-                        />
-                        Per gram
-                      </label>
-                      <label>
-                        <input
-                          type="radio"
-                          name="making-basis"
-                          checked={normalizeMakingChargeType(variantForm.makingChargeType) === "percent"}
-                          onChange={() =>
-                            setVariantForm((c) => ({ ...c, makingChargeType: "percent" }))
-                          }
-                        />
-                        Percentage
-                      </label>
-                    </div>
+                    <ChargeBasisRadios
+                      name="making-basis"
+                      value={variantForm.makingChargeType}
+                      onChange={(type) => setVariantForm((c) => ({ ...c, makingChargeType: type }))}
+                    />
                     <input
                       type="number"
                       step="0.01"
@@ -2729,16 +3024,11 @@ export default function ProductsPage() {
                                   {variant.metalColor} · {purity?.label} · Gross:{" "}
                                   {formatGrams(variant.grossWeight)} (Net:{" "}
                                   {formatGrams(
-                                    variant.grossWeight -
-                                      (variant.stoneIncluded
-                                        ? (variant.stones || []).reduce(
-                                            (sum, stone) => sum + stoneWeightInGrams(stone),
-                                            0,
-                                          ) ||
-                                          (variant.stoneType === "Diamond"
-                                            ? (variant.stoneWeight || 0) / 5
-                                            : variant.stoneWeight || 0)
-                                        : 0)
+                                    Number(variant.netGoldWeight) ||
+                                      Math.max(
+                                        0,
+                                        variant.grossWeight - stoneGramsOnVariant(variant),
+                                      ),
                                   )}
                                   )
                                 </strong>
@@ -2841,13 +3131,12 @@ export default function ProductsPage() {
                       <span className="l">{stone.stoneType || "Stone"}</span>
                       <span className="v">
                         {isDiamondStone(stone.stoneType)
-                          ? `${(stone.weight || 0).toFixed(3)} ct`
-                          : formatGrams(stone.weight)}
-                        {isDiamondStone(stone.stoneType) && quote.ok && "diamondValue" in quote
-                          ? ` · ${formatINR(quote.diamondValue)}`
-                          : !isDiamondStone(stone.stoneType)
-                            ? ` · ${formatINR(stoneChargeForLine(stone))}`
-                            : ""}
+                          ? `${(stone.weight || 0).toFixed(3)} ct${
+                              quote.ok && "diamondValue" in quote
+                                ? ` · ${formatINR(quote.diamondValue)}`
+                                : ""
+                            }`
+                          : formatINR(stoneChargeForLine(stone))}
                       </span>
                     </div>
                   ))
@@ -2887,7 +3176,8 @@ export default function ProductsPage() {
                     busy ||
                     (enableVariants
                       ? variantsForSave.length === 0
-                      : !(Number(variantForm.grossWeight) > 0) ||
+                      : (!(Number(variantForm.netGoldWeight) > 0) &&
+                          !(Number(variantForm.grossWeight) > 0)) ||
                         (productForm.pricingMode === "manual" &&
                           !(Number(variantForm.manualPrice) > 0)) ||
                         (variantForm.stoneIncluded && !diamondQuote.ok))

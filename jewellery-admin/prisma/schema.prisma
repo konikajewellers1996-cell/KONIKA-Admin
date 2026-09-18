@@ -85,6 +85,7 @@ model Product {
   dimensionWidth   String           @default("")
   dimensionHeight  String           @default("")
   availableSizes   String           @default("[]")
+  isRing           Boolean          @default(false)
   pricingMode      String           @default("auto")
   shopifyProductId String?
   status           String           @default("Active")
@@ -101,6 +102,7 @@ model ProductVariant {
   purityId           String
   metalColor         String
   grossWeight        Float
+  netGoldWeight      Float        @default(0)
   stoneIncluded      Boolean      @default(false)
   stoneType          String       @default("None")
   stoneWeight        Float        @default(0)
@@ -109,6 +111,7 @@ model ProductVariant {
   diamondCount       Int          @default(1)
   pricePerCarat      Float        @default(0)
   wastagePercent     Float        @default(0)
+  wastageType        String       @default("percent")
   makingChargeType   String       @default("percent")
   makingChargeValue  Float        @default(0)
   otherCharges       Float        @default(0)

@@ -105,6 +105,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           gstPercent: first.gstPercent,
           pricingMode: product.pricingMode,
           manualPrice: first.manualPrice,
+          wastageType: first.wastageType,
         }).total
       : 0;
 

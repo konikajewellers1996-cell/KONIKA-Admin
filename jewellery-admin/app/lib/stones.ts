@@ -20,7 +20,7 @@ export function emptyStoneLine(stoneType = "Diamond"): StoneLine {
     gemstoneTypeId: "",
     weight: 0,
     rate: 0,
-    rateMode: "per_gram",
+    rateMode: isDiamondStone(stoneType) ? "per_gram" : "flat",
     diamondQualityId: "",
     diamondCount: 1,
     diamondCategory: "Round",
@@ -40,11 +40,8 @@ export function stoneWeightInGrams(stone: Pick<StoneLine, "stoneType" | "weight"
 export function stoneChargeForLine(
   stone: Pick<StoneLine, "stoneType" | "weight" | "rate" | "rateMode">,
 ) {
-  const weight = Number(stone.weight) || 0;
   const rate = Number(stone.rate) || 0;
-  if (isDiamondStone(stone.stoneType)) return rate;
-  if (stone.rateMode === "flat") return rate;
-  return weight * rate;
+  return rate;
 }
 
 export function parseStonesJson(
@@ -70,7 +67,9 @@ export function parseStonesJson(
           gemstoneTypeId: String(item.gemstoneTypeId || ""),
           weight: Number(item.weight) || 0,
           rate: Number(item.rate) || 0,
-          rateMode: String(item.rateMode || "per_gram").toLowerCase() === "flat" ? "flat" : "per_gram",
+          rateMode: (isDiamondStone(String(item.stoneType || item.type || "Diamond"))
+            ? "per_gram"
+            : "flat") as StoneRateMode,
           diamondQualityId: String(item.diamondQualityId || ""),
           diamondCount: Number(item.diamondCount) || 1,
           diamondCategory: String(item.diamondCategory || "Round"),
@@ -90,7 +89,7 @@ export function parseStonesJson(
         gemstoneTypeId: "",
         weight: Number(fallback.stoneWeight) || 0,
         rate: Number(fallback.stoneRate) || 0,
-        rateMode: "per_gram",
+        rateMode: isDiamondStone(fallback.stoneType) ? "per_gram" : "flat",
         diamondQualityId: fallback.diamondQualityId || "",
         diamondCount: Number(fallback.diamondCount) || 1,
         diamondCategory: fallback.diamondCategory || "Round",

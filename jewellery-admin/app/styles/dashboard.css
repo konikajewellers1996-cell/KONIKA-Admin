@@ -586,6 +586,19 @@ select.filter {
   color: var(--ink);
 }
 
+.field input[type="radio"],
+.field input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  max-width: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 select.filter {
   width: auto;
   font-size: 14px;
@@ -896,9 +909,11 @@ table.data tbody tr:hover {
 
 .radio-inline {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px 16px;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 14px;
   margin: 6px 0 8px;
+  width: auto;
 }
 
 .radio-inline label {
@@ -907,10 +922,19 @@ table.data tbody tr:hover {
   gap: 6px;
   font-size: 13px;
   cursor: pointer;
+  white-space: nowrap;
+  width: auto;
+  line-height: 1;
 }
 
-.radio-inline input {
+.radio-inline input[type="radio"] {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  margin: 0;
   accent-color: var(--surface-primary-cta, #182851);
+  flex: none;
 }
 
 .prod-name {

@@ -11,10 +11,12 @@ export type PriceStoneLine = {
 
 export type PriceInput = {
   grossWeight: number;
+  netGoldWeight?: number;
   stoneWeight: number;
   stoneIncluded: boolean;
   stoneType?: string;
   wastagePercent: number;
+  wastageType?: MakingChargeType | string;
   makingChargeType: MakingChargeType | string;
   makingChargeValue: number;
   stoneRate: number;
@@ -87,10 +89,11 @@ export function calculateProductPrice(input: PriceInput): PriceBreakdown {
   }
 
   const grossWeight = Number(input.grossWeight) || 0;
-  const wastagePercent = Number(input.wastagePercent) || 0;
+  const wastageValueInput = Number(input.wastagePercent) || 0;
   const goldPricePerGram = Number(input.goldPricePerGram) || 0;
   const makingChargeValue = Number(input.makingChargeValue) || 0;
   const makingType = normalizeMakingChargeType(input.makingChargeType);
+  const wastageType = normalizeMakingChargeType(input.wastageType || "percent");
   const stoneLines = (input.stones || []).filter(
     (stone) => stone.stoneType && stone.stoneType !== "None",
   );
@@ -119,11 +122,24 @@ export function calculateProductPrice(input: PriceInput): PriceBreakdown {
       : 0;
   }
 
-  const netGoldWeight = Math.max(grossWeight - stoneWeightInGrams, 0);
-  const wastageWeight = netGoldWeight * (wastagePercent / 100);
-  const chargeableGoldWeight = netGoldWeight + wastageWeight;
+  const computedNet = Math.max(grossWeight - stoneWeightInGrams, 0);
+  const enteredNet = Number(input.netGoldWeight);
+  const netGoldWeight =
+    Number.isFinite(enteredNet) && enteredNet >= 0 && input.netGoldWeight != null
+      ? enteredNet
+      : computedNet;
+  let extraGoldGrams = 0;
+  let wastageValue = 0;
+  if (wastageType === "percent") {
+    extraGoldGrams = netGoldWeight * (wastageValueInput / 100);
+    wastageValue = extraGoldGrams * goldPricePerGram;
+  } else if (wastageType === "per_gram") {
+    wastageValue = netGoldWeight * wastageValueInput;
+  } else {
+    wastageValue = wastageValueInput;
+  }
+  const chargeableGoldWeight = netGoldWeight + extraGoldGrams;
   const netGoldValue = netGoldWeight * goldPricePerGram;
-  const wastageValue = wastageWeight * goldPricePerGram;
   const goldValue = chargeableGoldWeight * goldPricePerGram;
 
   let makingCharge = 0;
@@ -135,7 +151,8 @@ export function calculateProductPrice(input: PriceInput): PriceBreakdown {
     makingCharge = makingChargeValue;
   }
 
-  const subtotal = goldValue + makingCharge + stoneCharge + otherCharges;
+  const wastageInGold = wastageType === "percent" ? 0 : wastageValue;
+  const subtotal = goldValue + makingCharge + stoneCharge + otherCharges + wastageInGold;
   const gstValue = subtotal * (resolvedGst / 100);
   const total = subtotal + gstValue;
 

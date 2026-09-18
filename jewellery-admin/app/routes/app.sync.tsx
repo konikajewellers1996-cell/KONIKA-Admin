@@ -167,6 +167,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 gstPercent: variant.gstPercent,
                 pricingMode: product.pricingMode,
                 manualPrice: variant.manualPrice,
+                wastageType: variant.wastageType,
               }).total,
               status: variant.status,
             })),
