@@ -47,6 +47,7 @@ import { ALL_COLLECTIONS_NAME } from "../lib/collections";
 import { ensureAllCollectionsCollection } from "../lib/seed.server";
 import { htmlToPlainText, normalizeImageUrl } from "../lib/text";
 import { AmountField, amountModeFromCharge } from "../lib/amount-field";
+import { SearchChipPicker } from "../lib/search-chip-picker";
 import {
   emptyDiscountLine,
   mergedDiscountLines,
@@ -1210,7 +1211,6 @@ export default function ProductsPage() {
   const [draftFile, setDraftFile] = useState<File | null>(null);
   const productImageInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedCollections, setSelectedCollections] = useState<Array<{ id: string; name: string }>>([]);
-  const [collectionSelectVal, setCollectionSelectVal] = useState("");
   const [enableVariants, setEnableVariants] = useState(false);
   const [dragImageKey, setDragImageKey] = useState<string | null>(null);
   const [viewingProductId, setViewingProductId] = useState<string | null>(null);
@@ -1551,7 +1551,6 @@ export default function ProductsPage() {
         ? [{ id: allCollectionsEntry.id, name: allCollectionsEntry.name }]
         : [],
     );
-    setCollectionSelectVal("");
     setProductImages([]);
     setVariants([]);
     setVariantForm(
@@ -1655,7 +1654,6 @@ export default function ProductsPage() {
       });
     }
     setSelectedCollections(selectedColls);
-    setCollectionSelectVal("");
     setEnableVariants(product.variants.length > 1);
     setDragImageKey(null);
     setProductImages(
@@ -2363,81 +2361,28 @@ export default function ProductsPage() {
 
                 <div className="field">
                   <label>Collections</label>
-                  <select
-                    value={collectionSelectVal}
-                    onChange={(e) => {
-                      const nextId = e.target.value;
-                      setCollectionSelectVal("");
-                      if (!nextId) return;
-                      const coll = collections.find((c) => c.id === nextId);
-                      if (!coll) return;
-                      setSelectedCollections((prev) =>
-                        prev.some((sc) => sc.id === coll.id)
-                          ? prev
-                          : [...prev, { id: coll.id, name: coll.name }],
+                  <SearchChipPicker
+                    name="collectionIds"
+                    placeholder="Search collections to add…"
+                    items={collections.map((c) => ({
+                      id: c.id,
+                      label: c.parent ? `${c.name} (Sub of ${c.parent.name})` : c.name,
+                    }))}
+                    selected={selectedCollections.map((c) => ({ id: c.id, label: c.name }))}
+                    lockedIds={
+                      allCollectionsEntry ? [allCollectionsEntry.id] : []
+                    }
+                    onChange={(next) => {
+                      setSelectedCollections(
+                        next.map((item) => {
+                          const coll = collections.find((c) => c.id === item.id);
+                          return { id: item.id, name: coll?.name || item.label };
+                        }),
                       );
-                      // Selecting collections must never remount / rehydrate product images
                       setProductImages((current) => dedupeProductImageItems(current));
                     }}
-                  >
-                    <option value="">Select a collection to add…</option>
-                    {collections
-                      .filter((c) => !selectedCollections.some((sc) => sc.id === c.id))
-                      .map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} {c.parent ? `(Sub of ${c.parent.name})` : ""}
-                        </option>
-                      ))}
-                  </select>
-                  <div className="hint">
-                    Selecting a collection adds it immediately. Every product is also kept in {ALL_COLLECTIONS_NAME}.
-                  </div>
-
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-                    {selectedCollections.map((coll) => {
-                      const isAll = coll.name === ALL_COLLECTIONS_NAME;
-                      return (
-                        <div
-                          key={coll.id}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                            padding: "6px 12px",
-                            borderRadius: 20,
-                            fontSize: "0.9em",
-                            backgroundColor: isAll ? "var(--gold-tint)" : "#f0f0f0",
-                            border: "1px solid #ddd",
-                          }}
-                        >
-                          <span>{coll.name}</span>
-                          {!isAll ? (
-                            <button
-                              type="button"
-                              style={{
-                                border: "none",
-                                background: "transparent",
-                                cursor: "pointer",
-                                fontSize: "1.1em",
-                                padding: 0,
-                                lineHeight: 1,
-                                color: "#888",
-                              }}
-                              onClick={() => {
-                                setSelectedCollections((prev) =>
-                                  prev.filter((c) => c.id !== coll.id),
-                                );
-                              }}
-                              aria-label={`Remove ${coll.name}`}
-                            >
-                              &times;
-                            </button>
-                          ) : null}
-                          <input type="hidden" name="collectionIds" value={coll.id} />
-                        </div>
-                      );
-                    })}
-                  </div>
+                    hint={`Search and click to add. Every product is also kept in ${ALL_COLLECTIONS_NAME}.`}
+                  />
                 </div>
 
                 <div className="field">
@@ -2659,21 +2604,13 @@ export default function ProductsPage() {
                   </div>
 
                 {variantForm.stoneIncluded ? (
-                  <div style={{ display: "grid", gap: 14 }}>
+                  <div className="stone-stack">
                     {(variantForm.stones?.length ? variantForm.stones : [emptyStoneLine()]).map((stone) => {
                       const quoted = quotedStones.find((item) => item.stone.key === stone.key);
                       const quote = quoted?.quote;
                       const diamond = isDiamondStone(stone.stoneType);
                       return (
-                        <div
-                          key={stone.key}
-                          style={{
-                            border: "1px solid var(--line, #e6e4e3)",
-                            padding: 12,
-                            display: "grid",
-                            gap: 10,
-                          }}
-                        >
+                        <div key={stone.key} className="stone-card">
                           <div className="field-row">
                             <div className="field">
                               <label>Stone type</label>
@@ -2816,9 +2753,10 @@ export default function ProductsPage() {
                             </div>
                           )}
                           {(variantForm.stones || []).length > 1 ? (
+                            <div className="stone-card-actions">
                             <button
                               type="button"
-                              className="btn small"
+                              className="btn outline-remove"
                               onClick={() =>
                                 setVariantForm((current) =>
                                   withGrossFromNet({
@@ -2830,13 +2768,14 @@ export default function ProductsPage() {
                             >
                               Remove stone
                             </button>
+                            </div>
                           ) : null}
                         </div>
                       );
                     })}
                     <button
                       type="button"
-                      className="btn"
+                      className="btn outline-add"
                       onClick={() =>
                         setVariantForm((current) =>
                           withGrossFromNet({
@@ -3051,7 +2990,7 @@ export default function ProductsPage() {
                     ))}
                     <button
                       type="button"
-                      className="btn"
+                      className="btn outline-add"
                       onClick={() =>
                         setProductForm((current) => ({
                           ...current,

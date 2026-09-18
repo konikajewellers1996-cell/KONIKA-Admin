@@ -3,6 +3,7 @@ import { Form, useActionData, useLoaderData, useNavigation } from "react-router"
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { AmountField } from "../lib/amount-field";
+import { SearchChipPicker, type PickerItem } from "../lib/search-chip-picker";
 import {
   parseDiscountTargets,
   parseStringIdList,
@@ -131,6 +132,9 @@ export default function DiscountsPage() {
   const [valueType, setValueType] = useState<DiscountValueType>("percent");
   const [value, setValue] = useState(0);
   const [applyAll, setApplyAll] = useState(false);
+  const [selectedCollections, setSelectedCollections] = useState<PickerItem[]>([]);
+  const [selectedProducts, setSelectedProducts] = useState<PickerItem[]>([]);
+  const pickerDisabled = !isCoupon && applyAll;
 
   return (
     <>
@@ -231,24 +235,33 @@ export default function DiscountsPage() {
             ) : null}
             <div className="field">
               <label>Collections</label>
-              <select name="collectionIds" multiple size={6} disabled={!isCoupon && applyAll}>
-                {collections.map((collection) => (
-                  <option key={collection.id} value={collection.id}>
-                    {collection.name}
-                  </option>
-                ))}
-              </select>
-              <div className="hint">Hold Ctrl / Cmd to select more than one.</div>
+              <SearchChipPicker
+                name="collectionIds"
+                disabled={pickerDisabled}
+                placeholder="Search collections to add…"
+                items={collections.map((collection) => ({
+                  id: collection.id,
+                  label: collection.name,
+                }))}
+                selected={selectedCollections}
+                onChange={setSelectedCollections}
+                hint="Search and click to add. You can add as many collections as you need."
+              />
             </div>
             <div className="field">
               <label>Products</label>
-              <select name="productIds" multiple size={8} disabled={!isCoupon && applyAll}>
-                {products.map((product) => (
-                  <option key={product.id} value={product.id}>
-                    {product.sku} — {product.name}
-                  </option>
-                ))}
-              </select>
+              <SearchChipPicker
+                name="productIds"
+                disabled={pickerDisabled}
+                placeholder="Search products by name or SKU…"
+                items={products.map((product) => ({
+                  id: product.id,
+                  label: `${product.sku} — ${product.name}`,
+                }))}
+                selected={selectedProducts}
+                onChange={setSelectedProducts}
+                hint="Search and click to add. You can add as many products as you need."
+              />
             </div>
             <button className="btn primary" type="submit" disabled={busy}>
               Save discount
