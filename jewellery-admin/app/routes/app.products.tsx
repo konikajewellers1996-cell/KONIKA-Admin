@@ -26,7 +26,7 @@ import {
   quoteDiamondValue,
   type DiamondQualityLike,
 } from "../lib/diamond-pricing";
-import { deleteProductFromShopify, syncSingleProductToShopify } from "../lib/shopify-catalog.server";
+import { autoSyncCatalogFromShopify, deleteProductFromShopify, syncSingleProductToShopify } from "../lib/shopify-catalog.server";
 import {
   readFormFile,
   uploadImageToShopifyFiles,
@@ -346,9 +346,9 @@ const emptyProductForm = (collectionIds: string[] = []): ProductFormState => ({
 });
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
 
-  const [settings, collections, metals, purities, products, diamondQualities, gemstones, discountRulesRaw] = await Promise.all([
+  let [settings, collections, metals, purities, products, diamondQualities, gemstones, discountRulesRaw] = await Promise.all([
     prisma.appSetting.findUnique({ where: { id: "default" } }),
     prisma.collection.findMany({
       include: { parent: true },
@@ -385,6 +385,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }),
     prisma.discountRule.findMany({ where: { status: "Active" } }),
   ]);
+
+  if (products.length === 0) {
+    await autoSyncCatalogFromShopify(admin.graphql, { force: true });
+    [collections, products] = await Promise.all([
+      prisma.collection.findMany({
+        include: { parent: true },
+        orderBy: { name: "asc" },
+      }),
+      prisma.product.findMany({
+        include: {
+          collections: true,
+          variants: {
+            include: {
+              metal: true,
+              purity: true,
+              diamondQuality: true,
+            },
+          },
+        },
+        orderBy: { updatedAt: "desc" },
+      }),
+    ]);
+  } else {
+    autoSyncCatalogFromShopify(admin.graphql).catch((err) =>
+      console.error("[Products] Auto-sync failed:", err)
+    );
+  }
 
   const goldPricePerGram = settings?.goldPricePerGram ?? 6500;
   const discountRules: CatalogDiscountRule[] = discountRulesRaw.map((rule) => ({
@@ -562,6 +589,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(form.get("intent") || "");
 
   try {
+    if (intent === "import_shopify") {
+      await autoSyncCatalogFromShopify(admin.graphql, { force: true });
+      return { ok: true, message: "Products and collections successfully fetched from Shopify!" };
+    }
+
     if (intent === "delete") {
       const id = String(form.get("id") || "");
       const product = await prisma.product.findUnique({ where: { id } });
@@ -2263,6 +2295,14 @@ export default function ProductsPage() {
             </button>
           ) : (
             <>
+              <Form method="post" style={{ display: "inline" }}>
+                <input type="hidden" name="intent" value="import_shopify" />
+                <button type="submit" className="btn" disabled={busy}>
+                  {busy && navigation.formData?.get("intent") === "import_shopify"
+                    ? "Fetching..."
+                    : "Fetch from Shopify"}
+                </button>
+              </Form>
               <button type="button" className="btn" onClick={downloadProductTemplate}>
                 Excel template
               </button>

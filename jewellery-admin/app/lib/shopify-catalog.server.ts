@@ -10,6 +10,7 @@ import {
   parseStringIdList,
   type CatalogDiscountRule,
 } from "./discounts";
+import { ensureAllCollectionsCollection } from "./seed.server";
 import prisma from "../db.server";
 
 
@@ -1405,6 +1406,412 @@ export async function fetchCollectionsFromShopify(graphql: GraphqlClient) {
   }
 
   return allCollections;
+}
+
+function weightInGrams(weight: number | null | undefined, unit: string | null | undefined): number {
+  if (!weight || isNaN(Number(weight))) return 0;
+  const num = Number(weight);
+  const u = (unit || "GRAMS").toUpperCase();
+  if (u === "KILOGRAMS" || u === "KG") return num * 1000;
+  if (u === "POUNDS" || u === "LB" || u === "LBS") return num * 453.592;
+  if (u === "OUNCES" || u === "OZ") return num * 28.3495;
+  return num;
+}
+
+export async function syncCollectionsFromShopify(graphql: GraphqlClient) {
+  const shopifyCollections = await fetchCollectionsFromShopify(graphql);
+  let importedCount = 0;
+  let updatedCount = 0;
+
+  for (const fetched of shopifyCollections) {
+    const existingByShopifyId = await prisma.collection.findFirst({
+      where: { shopifyCollectionId: fetched.id },
+    });
+
+    if (existingByShopifyId) {
+      if (
+        existingByShopifyId.name !== fetched.title ||
+        existingByShopifyId.description !== fetched.description ||
+        existingByShopifyId.imageUrl !== fetched.imageUrl
+      ) {
+        await prisma.collection.update({
+          where: { id: existingByShopifyId.id },
+          data: {
+            name: fetched.title,
+            description: fetched.description,
+            imageUrl: fetched.imageUrl,
+          },
+        });
+        updatedCount++;
+      }
+    } else {
+      const existingByName = await prisma.collection.findFirst({
+        where: { name: fetched.title },
+      });
+
+      if (existingByName) {
+        await prisma.collection.update({
+          where: { id: existingByName.id },
+          data: {
+            shopifyCollectionId: fetched.id,
+            description: fetched.description,
+            imageUrl: fetched.imageUrl,
+          },
+        });
+        updatedCount++;
+      } else {
+        await prisma.collection.create({
+          data: {
+            name: fetched.title,
+            description: fetched.description,
+            imageUrl: fetched.imageUrl,
+            shopifyCollectionId: fetched.id,
+          },
+        });
+        importedCount++;
+      }
+    }
+  }
+
+  await ensureAllCollectionsCollection();
+  return { importedCount, updatedCount };
+}
+
+export async function syncProductsFromShopify(graphql: GraphqlClient) {
+  let hasNextPage = true;
+  let after: string | null = null;
+  let importedCount = 0;
+  let updatedCount = 0;
+
+  const [allMetals, allPurities, allCollections] = await Promise.all([
+    prisma.metalType.findMany(),
+    prisma.purityLevel.findMany(),
+    prisma.collection.findMany(),
+  ]);
+
+  const defaultMetal = allMetals.find((m) => m.status === "Active") || allMetals[0];
+  const defaultPurity = allPurities.find((p) => p.metalId === defaultMetal?.id) || allPurities[0];
+
+  while (hasNextPage) {
+    const res: any = await gql<any>(
+      graphql,
+      `#graphql
+      query getProducts($first: Int!, $after: String) {
+        products(first: $first, after: $after) {
+          nodes {
+            id
+            title
+            handle
+            descriptionHtml
+            status
+            tags
+            images(first: 50) {
+              nodes {
+                id
+                url
+              }
+            }
+            collections(first: 50) {
+              nodes {
+                id
+                title
+              }
+            }
+            variants(first: 100) {
+              nodes {
+                id
+                title
+                sku
+                price
+                weight
+                weightUnit
+                selectedOptions {
+                  name
+                  value
+                }
+              }
+            }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }`,
+      { first: 50, after },
+      "Fetch products from Shopify"
+    );
+
+    const nodes = res?.products?.nodes;
+    if (Array.isArray(nodes)) {
+      for (const p of nodes) {
+        if (!p || typeof p.id !== "string" || typeof p.title !== "string") continue;
+
+        const shopifyProductId = p.id;
+        const rawTags = Array.isArray(p.tags)
+          ? p.tags
+          : typeof p.tags === "string"
+          ? p.tags.split(",")
+          : [];
+        const tags = rawTags.map((t: string) => String(t).trim().toLowerCase());
+
+        let gender = "Unisex";
+        if (tags.includes("women")) gender = "Women";
+        else if (tags.includes("men")) gender = "Men";
+        else if (tags.includes("unisex")) gender = "Unisex";
+
+        // Images
+        const imgNodes = p.images?.nodes || [];
+        const imagesList: Array<{ url: string; shopifyFileId: string | null }> = [];
+        const seenUrls = new Set<string>();
+        for (const img of imgNodes) {
+          const url = String(img.url || "").trim();
+          if (!url) continue;
+          const key = normalizeImageUrl(url);
+          if (seenUrls.has(key)) continue;
+          seenUrls.add(key);
+          imagesList.push({
+            url,
+            shopifyFileId: img.id || null,
+          });
+        }
+        const imageUrl = imagesList[0]?.url || "";
+        const shopifyFileId = imagesList[0]?.shopifyFileId || null;
+        const imagesJson = JSON.stringify(imagesList);
+
+        // Collections mapping
+        const pColls = p.collections?.nodes || [];
+        const localCollectionIds: string[] = [];
+        for (const c of pColls) {
+          const matched = allCollections.find(
+            (ac) =>
+              ac.shopifyCollectionId === c.id ||
+              ac.name.toLowerCase() === String(c.title || "").toLowerCase()
+          );
+          if (matched && !localCollectionIds.includes(matched.id)) {
+            localCollectionIds.push(matched.id);
+          }
+        }
+
+        // Candidate SKU
+        const vNodes = p.variants?.nodes || [];
+        const variantSkus = vNodes.map((v: any) => String(v.sku || "").trim()).filter(Boolean);
+        const candidateSkus = Array.from(
+          new Set<string>(variantSkus.map((s: string) => s.split("-")[0].trim()).filter(Boolean))
+        );
+        const sku = candidateSkus[0] || p.handle || `JW-${shopifyProductId.split("/").pop()}`;
+
+        // Find existing product
+        let existing = await prisma.product.findFirst({
+          where: {
+            OR: [
+              { shopifyProductId },
+              ...(sku ? [{ sku }] : []),
+              { name: { equals: p.title, mode: "insensitive" } },
+            ],
+          },
+          include: { variants: true },
+        });
+
+        const productData = {
+          sku: existing?.sku || sku,
+          name: p.title,
+          description: htmlToPlainText(p.descriptionHtml || existing?.description || ""),
+          imageUrl: imagesList[0]?.url || imageUrl || existing?.imageUrl || "",
+          shopifyFileId: imagesList[0]?.shopifyFileId || shopifyFileId || existing?.shopifyFileId || null,
+          imagesJson: imagesList.length ? imagesJson : existing?.imagesJson || "[]",
+          gender,
+          status: p.status === "ACTIVE" ? "Active" : "Draft",
+        };
+
+        let productRecord: any;
+        if (existing) {
+          productRecord = await prisma.product.update({
+            where: { id: existing.id },
+            data: {
+              shopifyProductId,
+              ...productData,
+              ...(localCollectionIds.length > 0
+                ? { collections: { set: localCollectionIds.map((id) => ({ id })) } }
+                : {}),
+            },
+          });
+          updatedCount++;
+        } else {
+          productRecord = await prisma.product.create({
+            data: {
+              shopifyProductId,
+              ...productData,
+              collections: {
+                connect: localCollectionIds.map((id) => ({ id })),
+              },
+            },
+          });
+          importedCount++;
+        }
+
+        // Sync variants
+        const syncedVariantIds: string[] = [];
+        for (const v of vNodes) {
+          const shopifyVariantId = v.id;
+          let grossWeight = weightInGrams(v.weight, v.weightUnit);
+
+          const selectedOptions = v.selectedOptions || [];
+          let colorVal = "";
+          let purityLabel = "";
+
+          for (const opt of selectedOptions) {
+            const optName = String(opt.name || "").toLowerCase();
+            const optVal = String(opt.value || "").trim();
+            if (optVal.toLowerCase() === "default title") continue;
+
+            if (/color|colour|metal/i.test(optName)) {
+              colorVal = optVal;
+            } else if (/purity|karat/i.test(optName)) {
+              purityLabel = optVal;
+            }
+          }
+
+          if (
+            !colorVal &&
+            selectedOptions[0]?.value &&
+            selectedOptions[0].value.toLowerCase() !== "default title"
+          ) {
+            colorVal = selectedOptions[0].value;
+          }
+          if (!purityLabel && selectedOptions[1]?.value) {
+            purityLabel = selectedOptions[1].value;
+          }
+
+          let metal = null;
+          if (colorVal) {
+            metal = allMetals.find(
+              (m) =>
+                m.color.toLowerCase() === colorVal.toLowerCase() ||
+                m.name.toLowerCase() === colorVal.toLowerCase()
+            );
+          }
+          if (!metal) metal = defaultMetal;
+
+          let purity = null;
+          if (purityLabel && metal) {
+            purity = allPurities.find(
+              (p) => p.metalId === metal.id && p.label.toLowerCase() === purityLabel.toLowerCase()
+            );
+          }
+          if (!purity && purityLabel) {
+            purity = allPurities.find((p) => p.label.toLowerCase() === purityLabel.toLowerCase());
+          }
+          if (!purity && metal) {
+            purity = allPurities.find((p) => p.metalId === metal.id);
+          }
+          if (!purity) purity = defaultPurity;
+
+          if (!metal || !purity) continue;
+
+          let existingVariant = await prisma.productVariant.findFirst({
+            where: { shopifyVariantId },
+          });
+
+          if (!existingVariant) {
+            existingVariant = await prisma.productVariant.findFirst({
+              where: {
+                productId: productRecord.id,
+                metalId: metal.id,
+                purityId: purity.id,
+              },
+            });
+          }
+
+          if (!existingVariant && vNodes.length === 1) {
+            existingVariant = await prisma.productVariant.findFirst({
+              where: { productId: productRecord.id },
+            });
+          }
+
+          if (existingVariant) {
+            const updatedWeight = grossWeight > 0 ? grossWeight : existingVariant.grossWeight;
+            const updated = await prisma.productVariant.update({
+              where: { id: existingVariant.id },
+              data: {
+                shopifyVariantId,
+                metalId: metal.id,
+                purityId: purity.id,
+                metalColor: metal.color || metal.name,
+                grossWeight: updatedWeight,
+                sku: v.sku || existingVariant.sku || "",
+              },
+            });
+            syncedVariantIds.push(updated.id);
+          } else {
+            const created = await prisma.productVariant.create({
+              data: {
+                productId: productRecord.id,
+                metalId: metal.id,
+                purityId: purity.id,
+                metalColor: metal.color || metal.name,
+                grossWeight: grossWeight > 0 ? grossWeight : 0,
+                stoneIncluded: false,
+                stoneType: "None",
+                stoneWeight: 0,
+                wastagePercent: 5,
+                makingChargeType: "percent",
+                makingChargeValue: 10,
+                stoneRate: 0,
+                shopifyVariantId,
+                sku: v.sku || "",
+                status: "Active",
+              },
+            });
+            syncedVariantIds.push(created.id);
+          }
+        }
+
+        if (syncedVariantIds.length > 0) {
+          await prisma.productVariant.deleteMany({
+            where: {
+              productId: productRecord.id,
+              id: { notIn: syncedVariantIds },
+            },
+          });
+        }
+      }
+    }
+
+    hasNextPage = res?.products?.pageInfo?.hasNextPage ?? false;
+    after = res?.products?.pageInfo?.endCursor ?? null;
+  }
+
+  await ensureAllCollectionsCollection();
+
+  return { importedCount, updatedCount };
+}
+
+let lastCatalogSyncTime = 0;
+let isSyncInProgress = false;
+
+export async function autoSyncCatalogFromShopify(
+  graphql: GraphqlClient,
+  options?: { force?: boolean }
+) {
+  const now = Date.now();
+  if (isSyncInProgress) return;
+  if (!options?.force && now - lastCatalogSyncTime < 2 * 60 * 1000) {
+    return;
+  }
+
+  isSyncInProgress = true;
+  try {
+    console.log("[Auto-Sync] Syncing collections and products from Shopify...");
+    await syncCollectionsFromShopify(graphql);
+    await syncProductsFromShopify(graphql);
+    lastCatalogSyncTime = Date.now();
+    console.log("[Auto-Sync] Completed syncing catalog from Shopify.");
+  } catch (err) {
+    console.error("[Auto-Sync] Error during catalog auto-sync:", err);
+  } finally {
+    isSyncInProgress = false;
+  }
 }
 
 export async function syncSingleProductToShopify(

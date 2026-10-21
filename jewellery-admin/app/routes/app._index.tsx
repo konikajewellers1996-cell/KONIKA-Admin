@@ -4,6 +4,7 @@ import { Link, redirect, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { calculateProductPrice, formatGrams, formatINR } from "../lib/pricing";
+import { autoSyncCatalogFromShopify } from "../lib/shopify-catalog.server";
 
 function initials(name: string) {
   return name
@@ -38,7 +39,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const [settings, collections, metals, purities, products, productCount] =
+  let [settings, collections, metals, purities, products, productCount] =
     await Promise.all([
       prisma.appSetting.findUnique({ where: { id: "default" } }),
       prisma.collection.findMany({
@@ -66,6 +67,32 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }),
       prisma.product.count(),
     ]);
+
+  if (productCount === 0) {
+    await autoSyncCatalogFromShopify(admin.graphql, { force: true });
+    [collections, products, productCount] = await Promise.all([
+      prisma.collection.findMany({
+        include: {
+          parent: true,
+          _count: { select: { products: true } },
+        },
+        orderBy: { name: "asc" },
+      }),
+      prisma.product.findMany({
+        include: {
+          collections: true,
+          variants: { include: { metal: true, purity: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 32,
+      }),
+      prisma.product.count(),
+    ]);
+  } else {
+    autoSyncCatalogFromShopify(admin.graphql).catch((err) =>
+      console.error("[Dashboard] Auto-sync failed:", err)
+    );
+  }
 
   const goldPricePerGram = settings?.goldPricePerGram ?? 6500;
 
